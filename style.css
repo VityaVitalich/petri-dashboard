@@ -144,7 +144,7 @@ table.scores th.dim.gstart { border-left: 1px solid var(--axis); }
 table.scores th.grp { text-align: left; font-size: 11px; color: var(--muted); font-weight: 500; letter-spacing: .04em; text-transform: uppercase; padding: 0 3px 2px; border-bottom: 1px solid var(--grid); }
 table.scores th.row, table.scores td.row {
   text-align: left; font-weight: 500; color: var(--ink); padding: 0 10px 0 2px; white-space: normal;
-  max-width: 240px; overflow-wrap: anywhere; line-height: 1.2;
+  width: 250px; min-width: 250px; max-width: 250px; overflow-wrap: anywhere; line-height: 1.2;
   position: sticky; left: 0; background: var(--bg); z-index: 1; font-size: 13px;
 }
 table.scores td.row.link { cursor: pointer; }

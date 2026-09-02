@@ -23,7 +23,7 @@ done
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   echo "▸ building data/"
-  python3 build_data.py "${BUILD_ARGS[@]}"
+  python3 build_data.py ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}   # bash-3.2-safe empty array
 fi
 
 python3 - <<'PY'
