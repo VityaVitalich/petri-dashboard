@@ -305,6 +305,10 @@
 
   // ------------------------------------------------------------ overview ----
   function renderOverview() {
+    if (!S.idx.transcripts.length) {
+      $('#view').innerHTML = '<div class="empty">No audits published yet. Run the petri skill, then <code>~/petri-dashboard/deploy.sh</code>.</div>';
+      return;
+    }
     const ts = filtered();
     const scored = ts.filter((t) => t.scored);
     const models = [...new Set(ts.map((t) => t.alias))].sort();
