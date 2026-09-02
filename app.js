@@ -74,41 +74,160 @@
   const cellTip = (d, st) => `${dimShort(d.id)} — ${d.desc || d.id}\nmean ${st.mean.toFixed(2)}${st.n > 1 ? ` ± ${st.se.toFixed(2)} se` : ''}  (n=${st.n})\n${d.higher_better ? 'higher = better' : 'higher = worse'}`;
 
   // ------------------------------------------------------------ filters ----
+  // Three searchable multi-select dropdowns (models · seeds · runs). Scales to
+  // hundreds of items: type-to-filter, all/none/invert on the shown subset,
+  // group toggles (model family / seed theme / model for runs). Deselections
+  // persist in localStorage as EXCLUSIONS so newly added models/runs show up.
+  const FKEYS = ['models', 'seeds', 'runs'];
+  const MS = { open: (new URLSearchParams(location.search).get('open')) || null, q: { models: '', seeds: '', runs: '' } };
+
+  function filterItems(key) {
+    const idx = S.idx;
+    if (key === 'models') {
+      return idx.models.map((m) => ({ v: m.alias, label: m.alias, n: m.n_transcripts, tip: m.target_model || '', group: m.alias.split('_')[0] }));
+    }
+    if (key === 'seeds') {
+      const counts = {};
+      idx.transcripts.forEach((t) => { counts[t.seed] = (counts[t.seed] || 0) + 1; });
+      return Object.keys(counts).map((s) => ({ v: s, label: s, n: counts[s], tip: seedOf(s).probes || '', group: themeTitle(seedOf(s).theme) }))
+        .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+    }
+    return idx.runs.map((r) => ({ v: r.id, label: utcShort(r.utc) + (r.note ? ` · ${r.note.length > 48 ? r.note.slice(0, 46) + '…' : r.note}` : ''), n: r.n_transcripts, tip: `${r.id}\n${r.note || ''}`.trim(), group: r.alias, utc: r.utc }))
+      .sort((a, b) => a.group.localeCompare(b.group) || b.utc.localeCompare(a.utc));
+  }
+  const allValues = (key) => filterItems(key).map((it) => it.v);
+  function matches(it, q) {
+    const hay = `${it.label} ${it.group}`.toLowerCase();
+    return q.toLowerCase().split(/\s+/).filter(Boolean).every((tok) => hay.includes(tok));
+  }
+  function saveFilters() {
+    try {
+      const ex = {};
+      FKEYS.forEach((k) => { ex[k] = allValues(k).filter((v) => !S.f[k].has(v)); });
+      localStorage.setItem('petri-filters-excluded', JSON.stringify(ex));
+    } catch (e) { /* ignore */ }
+  }
+  function loadFilters() {
+    let ex = {};
+    try { ex = JSON.parse(localStorage.getItem('petri-filters-excluded') || '{}') || {}; } catch (e) { ex = {}; }
+    FKEYS.forEach((k) => {
+      const excluded = new Set(ex[k] || []);
+      S.f[k] = new Set(allValues(k).filter((v) => !excluded.has(v)));
+    });
+  }
+  const nMatching = () => filtered().length;
+  function msSummary(key, items) {
+    const sel = S.f[key];
+    const on = items.filter((it) => sel.has(it.v));
+    if (on.length === items.length) return `all <span class="n">(${items.length})</span>`;
+    if (on.length === 0) return '<span class="none">none</span>';
+    if (on.length === 1) return esc(on[0].label);
+    return `${on.length} <span class="n">of ${items.length}</span>`;
+  }
+  function msList(key, items) {
+    const q = MS.q[key];
+    const shown = items.filter((it) => matches(it, q));
+    const grouped = new Set(items.map((it) => it.group)).size > 1;
+    let out = '', g = null;
+    shown.forEach((it) => {
+      if (grouped && it.group !== g) {
+        g = it.group;
+        const gi = shown.filter((x) => x.group === g);
+        const on = gi.filter((x) => S.f[key].has(x.v)).length;
+        out += `<label class="ms-group"><input type="checkbox" data-group="${esc(g)}" ${on === gi.length ? 'checked' : ''} ${on && on < gi.length ? 'data-ind="1"' : ''}><span class="lbl">${esc(g)}</span><span class="cnt">${gi.length}</span></label>`;
+      }
+      out += `<label class="ms-item" data-tip="${esc(it.tip)}"><input type="checkbox" data-v="${esc(it.v)}" ${S.f[key].has(it.v) ? 'checked' : ''}><span class="lbl">${esc(it.label)}</span><span class="cnt">${it.n}</span></label>`;
+    });
+    return out || '<div class="ms-empty">no matches</div>';
+  }
+  const setIndeterminate = (root) => root.querySelectorAll('input[data-ind]').forEach((i) => { i.indeterminate = true; });
+
   function renderFilters() {
     const el = $('#filters');
-    const idx = S.idx;
-    const seedsUsed = [...new Set(idx.transcripts.map((t) => t.seed))].sort((a, b) => {
-      const ta = seedOf(a).theme || '', tb = seedOf(b).theme || '';
-      return ta.localeCompare(tb) || a.localeCompare(b);
-    });
-    const cnt = (fn) => idx.transcripts.filter(fn).length;
-    const group = (label, key, items) => `
-      <div class="fgroup" data-key="${key}">
-        <span class="flabel">${label}</span>
-        ${items.map((it) => `<span class="chip ${S.f[key].has(it.v) ? 'on' : ''}" data-v="${esc(it.v)}" data-tip="${esc(it.tip || '')}">${it.html}<span class="cnt">${it.n}</span></span>`).join('')}
-        <span class="fall"><a href="#" data-all="1">all</a><a href="#" data-none="1">none</a></span>
-      </div>`;
-    el.innerHTML =
-      group('models', 'models', idx.models.map((m) => ({ v: m.alias, html: esc(m.alias), n: m.n_transcripts, tip: m.target_model }))) +
-      group('seeds', 'seeds', seedsUsed.map((s) => ({ v: s, html: `<span class="theme">${esc(seedOf(s).theme || '?')} ·</span>${esc(s)}`, n: cnt((t) => t.seed === s), tip: seedOf(s).probes || '' }))) +
-      group('runs', 'runs', idx.runs.map((r) => ({ v: r.id, html: `${esc(r.alias)} <span class="theme">· ${esc(utcShort(r.utc))}</span>`, n: r.n_transcripts, tip: r.note || '' })));
+    el.innerHTML = FKEYS.map((key) => {
+      const items = filterItems(key);
+      const open = MS.open === key;
+      return `<div class="ms ${open ? 'open' : ''}" data-key="${key}">
+        <button class="ms-btn" type="button" aria-expanded="${open}"><span class="k">${key}</span><span class="s">${msSummary(key, items)}</span><span class="caret">▾</span></button>
+        <div class="ms-panel" ${open ? '' : 'hidden'}>
+          <input class="ms-search" type="search" placeholder="type to filter ${key}…" value="${esc(MS.q[key])}" autocomplete="off">
+          <div class="ms-actions"><a href="#" data-act="all">all</a><a href="#" data-act="none">none</a><a href="#" data-act="invert">invert</a>${key === 'runs' ? '<a href="#" data-act="latest">latest per model</a>' : ''}<span class="hint">on the shown items</span></div>
+          <div class="ms-list">${msList(key, items)}</div>
+        </div></div>`;
+    }).join('') + `<span class="fsum"><b id="fsum-n">${nMatching()}</b> transcripts match</span><a href="#" id="freset" class="freset">reset</a>`;
+    setIndeterminate(el);
+    if (MS.open) { const inp = $(`.ms[data-key="${MS.open}"] .ms-search`); if (inp) inp.focus(); }
   }
+  function refreshMs(key) {
+    const box = $(`.ms[data-key="${key}"]`);
+    if (!box) return;
+    const items = filterItems(key);
+    $('.ms-btn .s', box).innerHTML = msSummary(key, items);
+    $('.ms-list', box).innerHTML = msList(key, items);
+    setIndeterminate(box);
+    $('#fsum-n').textContent = nMatching();
+  }
+  function changed(key) { saveFilters(); refreshMs(key); route(); }
+
   $('#filters').addEventListener('click', (e) => {
-    const g = e.target.closest('.fgroup');
-    if (!g) return;
-    const key = g.dataset.key;
-    const chip = e.target.closest('.chip');
-    const all = e.target.closest('[data-all]'), none = e.target.closest('[data-none]');
-    if (chip) {
-      const v = chip.dataset.v;
-      if (S.f[key].has(v)) S.f[key].delete(v); else S.f[key].add(v);
-    } else if (all || none) {
+    const box = e.target.closest('.ms');
+    if (e.target.closest('#freset')) {
       e.preventDefault();
-      S.f[key].clear();
-      if (all) g.querySelectorAll('.chip').forEach((c) => S.f[key].add(c.dataset.v));
-    } else return;
-    renderFilters();
-    route();
+      FKEYS.forEach((k) => { S.f[k] = new Set(allValues(k)); MS.q[k] = ''; });
+      saveFilters(); renderFilters(); route();
+      return;
+    }
+    if (!box) return;
+    const key = box.dataset.key;
+    if (e.target.closest('.ms-btn')) {
+      MS.open = MS.open === key ? null : key;
+      renderFilters();
+      return;
+    }
+    const act = e.target.closest('[data-act]');
+    if (act) {
+      e.preventDefault();
+      const items = filterItems(key);
+      const shown = items.filter((it) => matches(it, MS.q[key]));
+      const a = act.dataset.act;
+      if (a === 'latest') {
+        const latest = {};
+        items.forEach((it) => { if (!latest[it.group] || it.utc > latest[it.group].utc) latest[it.group] = it; });
+        S.f[key] = new Set(Object.values(latest).map((it) => it.v));
+      } else {
+        shown.forEach((it) => {
+          const on = S.f[key].has(it.v);
+          if (a === 'all' || (a === 'invert' && !on)) S.f[key].add(it.v);
+          else if (a === 'none' || (a === 'invert' && on)) S.f[key].delete(it.v);
+        });
+      }
+      changed(key);
+    }
+  });
+  $('#filters').addEventListener('change', (e) => {
+    const box = e.target.closest('.ms');
+    if (!box || e.target.type !== 'checkbox') return;
+    const key = box.dataset.key;
+    if (e.target.dataset.v != null) {
+      if (e.target.checked) S.f[key].add(e.target.dataset.v); else S.f[key].delete(e.target.dataset.v);
+    } else if (e.target.dataset.group != null) {
+      const g = e.target.dataset.group, on = e.target.checked;
+      filterItems(key).filter((it) => it.group === g && matches(it, MS.q[key])).forEach((it) => { if (on) S.f[key].add(it.v); else S.f[key].delete(it.v); });
+    }
+    changed(key);
+  });
+  $('#filters').addEventListener('input', (e) => {
+    if (!e.target.classList.contains('ms-search')) return;
+    const box = e.target.closest('.ms'), key = box.dataset.key;
+    MS.q[key] = e.target.value;
+    $('.ms-list', box).innerHTML = msList(key, filterItems(key));
+    setIndeterminate(box);
+  });
+  document.addEventListener('click', (e) => {
+    if (MS.open && !e.target.closest('.ms')) { MS.open = null; renderFilters(); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && MS.open) { MS.open = null; renderFilters(); }
   });
 
   // ------------------------------------------------------- score tables ----
@@ -447,9 +566,7 @@
     .then((r) => { if (!r.ok) throw new Error(`data/index.json → ${r.status}`); return r.json(); })
     .then((idx) => {
       S.idx = idx;
-      idx.models.forEach((m) => S.f.models.add(m.alias));
-      idx.transcripts.forEach((t) => S.f.seeds.add(t.seed));
-      idx.runs.forEach((r) => S.f.runs.add(r.id));
+      loadFilters();
       $('#gen').textContent = `data ${idx.generated_utc.replace('T', ' ').replace(/:\d\dZ$/, 'Z')}`;
       $('#foot-src').textContent = `built from ${idx.source.outputs}${idx.source.mreval_sha ? ` · MR-Eval @ ${idx.source.mreval_sha}` : ''}`;
       renderFilters();
