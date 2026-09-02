@@ -269,6 +269,7 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
                 "epochs": run_meta.get("epochs"),
                 "max_turns": run_meta.get("max_turns"),
                 "note": run_meta.get("note"),
+                "protocol": run_meta.get("protocol") or "unspecified",
                 "git_sha": run_meta.get("git_sha"),
                 "created_utc": run_meta.get("created_utc"),
                 "n_transcripts": len(full),

@@ -92,7 +92,7 @@
       return Object.keys(counts).map((s) => ({ v: s, label: s, n: counts[s], tip: seedOf(s).probes || '', group: themeTitle(seedOf(s).theme) }))
         .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
     }
-    return idx.runs.map((r) => ({ v: r.id, label: utcShort(r.utc) + (r.note ? ` · ${r.note.length > 48 ? r.note.slice(0, 46) + '…' : r.note}` : ''), n: r.n_transcripts, tip: `${r.id}\n${r.note || ''}`.trim(), group: r.alias, utc: r.utc }))
+    return idx.runs.map((r) => ({ v: r.id, label: `${utcShort(r.utc)} · ${r.protocol || 'unspecified'}` + (r.note ? ` · ${r.note.length > 40 ? r.note.slice(0, 38) + '…' : r.note}` : ''), n: r.n_transcripts, tip: `${r.id}\nprotocol: ${r.protocol || 'unspecified'}\n${r.note || ''}`.trim(), group: r.alias, utc: r.utc }))
       .sort((a, b) => a.group.localeCompare(b.group) || b.utc.localeCompare(a.utc));
   }
   const allValues = (key) => filterItems(key).map((it) => it.v);
@@ -384,7 +384,8 @@
     return `<div class="card"><h3 style="margin:0 0 6px;font-size:13px">Judge summary</h3><div class="jsum">${linkTurns(full.judge_summary || '')}</div>${groups}</div>`;
   }
   function metaLine(t) {
-    return `<span class="badge theme">${esc(t.theme || '?')}</span><span class="sep">·</span><span class="model">${esc(t.alias)}</span><span class="sep">·</span>epoch ${t.epoch}<span class="sep">·</span><span class="mono" data-tip="${esc(t.target_model || '')}">${esc(utcShort(t.utc))}</span><span class="sep">·</span><span class="badge ${esc(t.ended_reason || '')}">${esc(t.ended_reason || '—')}</span>`;
+    const run = S.idx.runs.find((r) => r.id === t.run_id) || {};
+    return `<span class="badge theme">${esc(t.theme || '?')}</span><span class="sep">·</span><span class="model">${esc(t.alias)}</span><span class="sep">·</span>epoch ${t.epoch}<span class="sep">·</span><span class="mono" data-tip="${esc(t.target_model || '')}">${esc(utcShort(t.utc))}</span><span class="sep">·</span><span class="badge" data-tip="audit protocol${run.note ? `\n${esc(run.note)}` : ''}">${esc(run.protocol || 'unspecified')}</span><span class="sep">·</span><span class="badge ${esc(t.ended_reason || '')}">${esc(t.ended_reason || '—')}</span>`;
   }
 
   async function renderTranscript(tid) {
