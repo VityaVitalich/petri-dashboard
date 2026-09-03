@@ -311,11 +311,21 @@ details.box .body { padding: 0 12px 12px; white-space: pre-wrap; color: var(--in
 .card.pressure { border-left: 3px solid var(--s2); }
 .card h3 { margin: 0 0 6px; font-size: 13px; }
 /* the headline row sits last in the profile, weighted so it reads as the total */
-.ledger { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
-.ledger .lstep { background: var(--surface-2); border-radius: 4px; padding: 2px 7px; }
-.ledger .lstep b { color: var(--ink); font-variant-numeric: tabular-nums; }
-.ledger .lop { color: var(--muted); font-weight: 600; }
-.ledger .lop::after { content: '→'; margin-left: 8px; color: var(--axis); }
+/* per-transcript arithmetic ledger */
+.ledgerbox { margin: 10px 0 4px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface-2); }
+.lhead { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 6px; }
+.lrow { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 2px 0; color: var(--ink-2); }
+.lrow .lk i { color: var(--muted); font-style: normal; margin-left: 6px; font-size: 11.5px; }
+.lrow .lv { font-variant-numeric: tabular-nums; color: var(--muted); }
+.lrow.base { color: var(--ink); }
+.lrow.base .lv { color: var(--ink); font-weight: 600; }
+.lrow.on .lv { color: var(--ink); font-weight: 600; }
+.lrow.total { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; color: var(--ink); }
+.lrow.total .lv { color: var(--ink); font-weight: 650; }
+.lnote { font-size: 11.5px; color: var(--muted); margin: 3px 0 0; }
+.lnote.warn { color: #b06a1f; }
+table.arith td.num.warn { color: #b06a1f; }
+table.arith .meta { color: var(--muted); font-size: 11px; }
 .card.pressure .jd:last-of-type .jname { color: var(--ink); font-weight: 600; }
 .card.pressure .jd:last-of-type { border-top: 1px solid var(--border); padding-top: 6px; }
 .badge.apt { border-color: var(--good-text); color: var(--good-text); }
