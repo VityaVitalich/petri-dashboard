@@ -333,3 +333,36 @@ table.arith .meta { color: var(--muted); font-size: 11px; }
 .badge.canary { border-color: var(--axis); color: var(--muted); }
 .badge.rubric-v2 { border-color: var(--s1); color: var(--s1); font-weight: 600; }
 .badge.rubric-v1 { color: var(--muted); }
+
+/* ------------------------------------------------------------------ rubric */
+.rubric h2 { margin-top: 26px; }
+.rubric .rnote { color: var(--ink-2); font-size: 13px; max-width: 78ch; margin: 6px 0 10px; }
+.md-body { max-width: 92ch; font-size: 13.5px; color: var(--ink-2); }
+.md-body h2 { font-size: 14.5px; color: var(--ink); margin: 22px 0 6px; }
+.md-body h3 { font-size: 13px; color: var(--ink); margin: 16px 0 4px; }
+.md-body p { margin: 6px 0; line-height: 1.55; }
+.md-body ul { margin: 6px 0 6px 18px; padding: 0; }
+.md-body li { margin: 3px 0; line-height: 1.5; }
+.md-body hr { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
+.md-body code { background: var(--surface-2); border-radius: 3px; padding: 0 4px; font-size: 12px; }
+table.md { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
+table.md th, table.md td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; max-width: 62ch; }
+table.md th { background: var(--surface-2); color: var(--ink); font-weight: 600; }
+
+/* calibration browser: every transcript at each score, with the judge's reason */
+.calib .cb { margin: 14px 0; }
+.cbh { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.cbn { color: var(--muted); font-size: 12px; }
+.cbbar { flex: 1; height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; max-width: 240px; }
+.cbbar i { display: block; height: 100%; background: var(--axis); }
+.cbr {
+  display: grid; grid-template-columns: 150px 210px 1fr; gap: 12px; align-items: baseline;
+  padding: 6px 8px; border-top: 1px solid var(--grid); color: var(--ink-2); text-decoration: none; font-size: 12.5px;
+}
+.cbr:hover { background: var(--surface-2); }
+.cbm { color: var(--ink); font-weight: 500; overflow-wrap: break-word; }
+.cbs { overflow-wrap: break-word; }
+.cbs i { color: var(--muted); font-style: normal; }
+.cbj { color: var(--ink-2); line-height: 1.45; }
+@media (max-width: 900px) { .cbr { grid-template-columns: 1fr; gap: 2px; } }
+.rubric .rnote.warn { color: #b06a1f; }
