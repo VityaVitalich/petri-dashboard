@@ -350,6 +350,42 @@
   }
   const dimToggle = () => `<label class="dim-toggle"><input type="checkbox" id="alldims" ${S.allDims ? 'checked' : ''}> show all ${dims().length} dimensions</label>`;
 
+  // Themes measure different things, so pooling them cancels real differences out.
+  // Break the headline down by theme before anyone reads the corpus-wide means.
+  function themeTable(models, ts) {
+    const ths = [...new Set(ts.map((t) => t.theme).filter(Boolean))]
+      .sort((a, b) => ts.filter((t) => t.theme === b).length - ts.filter((t) => t.theme === a).length);
+    if (ths.length < 2 || !models.length) return '';
+    const cell = (m, th, f) => {
+      const xs = ts.filter((t) => t.alias === m && t.theme === th && t.pressure)
+        .map((t) => f(t.pressure)).filter((v) => typeof v === 'number');
+      return xs.length ? { mean: mean(xs), se: stderr(xs), n: xs.length } : null;
+    };
+    const SEV = (p) => p.concession_severity, HEAD = (p) => p[CGP];
+    const num = (st) => (st ? `${st.mean.toFixed(2)}${st.n > 1 ? `<span class="meta"> ±${st.se.toFixed(2)}</span>` : ''}` : '–');
+    const head1 = ths.map((th) => {
+      const sd = [...new Set(ts.filter((t) => t.theme === th).map((t) => t.seed))];
+      const off = sd.filter((s) => seedOf(s).status === 'disabled').length;
+      return `<th class="grp2" colspan="2">${esc(themeTitle(th))}<span class="meta"> · ${ts.filter((t) => t.theme === th).length} transcripts, ${sd.length} seeds${off ? `, ${off} since disabled` : ''}</span></th>`;
+    }).join('');
+    const head2 = ths.map(() => '<th class="num" data-tip="mean concession_severity — what it agreed to, on its own merits">severity</th>'
+      + '<th class="num" data-tip="mean concern | pressure — severity after the criterion\'s discounts">concern | pressure</th>').join('');
+    const rows = models.map((m) => `<tr><td class="model">${brk(m)}</td>${
+      ths.map((th) => `<td class="num">${num(cell(m, th, SEV))}</td><td class="num"><b>${num(cell(m, th, HEAD))}</b></td>`).join('')}</tr>`).join('');
+    let delta = '';
+    if (models.length === 2) {
+      const d = (th, f) => {
+        const a = cell(models[0], th, f), b = cell(models[1], th, f);
+        return a && b ? `${b.mean - a.mean >= 0 ? '+' : '−'}${Math.abs(b.mean - a.mean).toFixed(2)}` : '';
+      };
+      delta = `<tr class="drow"><td class="model">Δ  ${brk(models[1])} − ${brk(models[0])}</td>${
+        ths.map((th) => `<td class="num">${d(th, SEV)}</td><td class="num"><b>${d(th, HEAD)}</b></td>`).join('')}</tr>`;
+    }
+    return `<h2>Headline by theme<span class="hint">the themes measure different things — read them apart before reading the corpus mean · models are rows</span></h2>
+      <div class="scroll-x"><table class="list arith themes"><thead><tr><th></th>${head1}</tr><tr><th>model</th>${head2}</tr></thead>
+      <tbody>${rows}${delta}</tbody></table></div>`;
+  }
+
   // The same arithmetic as the per-transcript ledger, averaged per model, so the
   // headline can be read as severity plus a discount rather than a bare number.
   function arithmeticTable(models, ts) {
@@ -417,6 +453,7 @@
         <div class="tile"><div class="k">seeds audited</div><div class="v">${seedsN}</div><div class="d">of ${activeSeeds} active seeds</div></div>
         <div class="tile"><div class="k">${topKey.label}</div><div class="v">${top && topKey.get(top) != null ? topKey.get(top) : '–'}</div><div class="d">${top ? `<a href="#/t/${enc(top.id)}">${esc(top.alias)} · ${esc(top.seed)} e${top.epoch}</a>` : 'no judged transcripts'}</div></div>
       </div>
+      ${themeTable(models, ts)}
       ${arithmeticTable(models, ts)}
       <h2>Mean judge score by model × dimension<span class="hint">models are rows · hover a cell for ± se and n · click a column to sort the list below</span></h2>
       ${rows.length ? scoreTable(rows, { sortable: true }) : '<div class="empty">select at least one model</div>'}

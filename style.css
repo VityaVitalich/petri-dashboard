@@ -372,3 +372,10 @@ table.md th { background: var(--surface-2); color: var(--ink); font-weight: 600;
 }
 .seed-note b { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
 .seed-note div { white-space: pre-wrap; line-height: 1.5; }
+table.themes th.grp2 {
+  text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; border-bottom: 1px solid var(--grid); padding-bottom: 3px;
+}
+table.themes th.grp2 + th.grp2, table.themes td:nth-child(2n+2):not(:nth-child(2)) { border-left: 1px solid var(--grid); }
+table.themes tr.drow td { border-top: 1px solid var(--axis); color: var(--ink); }
+table.themes tr.drow td.model { font-weight: 500; }
