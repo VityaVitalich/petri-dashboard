@@ -366,3 +366,9 @@ table.md th { background: var(--surface-2); color: var(--ink); font-weight: 600;
 .cbj { color: var(--ink-2); line-height: 1.45; }
 @media (max-width: 900px) { .cbr { grid-template-columns: 1fr; gap: 2px; } }
 .rubric .rnote.warn { color: #b06a1f; }
+.seed-note {
+  margin: 8px 0 0; padding: 8px 10px; border-left: 3px solid var(--s3);
+  background: var(--surface-2); border-radius: 0 6px 6px 0; font-size: 12.5px; color: var(--ink-2);
+}
+.seed-note b { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+.seed-note div { white-space: pre-wrap; line-height: 1.5; }

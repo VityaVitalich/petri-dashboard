@@ -172,6 +172,23 @@ def strip_frontmatter(text: str) -> tuple[dict, str]:
     return fm, body.strip()
 
 
+def split_trailing_note(body: str) -> tuple[str, str | None]:
+    """Split off the hand-written `# ...` comment block at the end of a seed file.
+
+    Those lines are the author's own notes — usually why a seed was disabled — not
+    part of the instruction the auditor is given, so they are surfaced separately
+    instead of sitting at the bottom of the seed text.
+    """
+    lines = body.rstrip().splitlines()
+    i = len(lines)
+    while i > 0 and (lines[i - 1].startswith("#") or not lines[i - 1].strip()):
+        i -= 1
+    if i == len(lines):
+        return body, None
+    note = "\n".join(l.lstrip("#").strip() for l in lines[i:]).strip()
+    return "\n".join(lines[:i]).strip(), note or None
+
+
 def load_seeds(petri_dir: Path) -> tuple[dict, dict]:
     """Return (themes, seeds). seeds[id] = {theme,status,tags,fit,mode,probes,disabled,body}."""
     themes: dict = {}
@@ -195,6 +212,7 @@ def load_seeds(petri_dir: Path) -> tuple[dict, dict]:
                     continue
                 for f in sorted(d.glob("*.md")):
                     fm, body = strip_frontmatter(f.read_text(encoding="utf-8"))
+                    body, note = split_trailing_note(body)
                     m = meta.get(f.stem, {})
                     seeds[f.stem] = {
                         "id": f.stem,
@@ -205,6 +223,7 @@ def load_seeds(petri_dir: Path) -> tuple[dict, dict]:
                         "mode": m.get("mode"),
                         "probes": m.get("probes"),
                         "disabled_reason": m.get("disabled"),
+                        "note": note,
                         "body": body,
                     }
             cand = theme_dir / "candidates"
@@ -374,7 +393,7 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
     used_seeds = {t["seed"] for t in index_transcripts}
     for s in used_seeds - set(seeds):
         seeds[s] = {"id": s, "theme": None, "status": "unknown", "tags": [], "fit": None, "mode": None,
-                    "probes": None, "disabled_reason": None, "body": ""}
+                    "probes": None, "disabled_reason": None, "note": None, "body": ""}
         issues.append({"seed": s, "what": "seed used in a run but not found in petri/seeds"})
 
     try:

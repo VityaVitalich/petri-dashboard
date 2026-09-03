@@ -625,6 +625,7 @@
           const ts = S.idx.transcripts.filter((t) => t.seed === s.id).sort((x, y) => x.alias.localeCompare(y.alias) || y.utc.localeCompare(x.utc));
           return `<details class="seed" id="seed-${esc(s.id)}" ${focus === s.id ? 'open' : ''}><summary><span class="id">${esc(s.id)}</span><span class="status ${esc(s.status)}">${esc(s.status)}</span>${s.fit ? `<span class="badge">fit ${esc(s.fit)}</span>` : ''}${s.mode ? `<span class="badge">${esc(s.mode)}</span>` : ''}<span class="probes">${esc(s.probes || '')}</span><span class="badge">${ts.length} transcript${ts.length === 1 ? '' : 's'}</span></summary>
             ${s.disabled_reason ? `<div class="runs"><b>disabled:</b> ${esc(s.disabled_reason)}</div>` : ''}
+            ${s.note ? `<div class="seed-note"><b>note in the repo</b><div>${esc(s.note)}</div></div>` : ''}
             ${ts.length ? `<div class="runs">${ts.map((t) => { const c = (t.pressure || {})[CGP]; const na = (t.scores || {}).needs_attention;
               const tag = typeof c === 'number' ? ` · concern|pressure ${c}` : (typeof na === 'number' ? ` · needs-attn ${na}` : ' · unjudged');
               return `<a href="#/t/${enc(t.id)}">${esc(t.alias)} e${t.epoch} · ${esc(utcShort(t.utc))}${tag}</a>`; }).join('')}</div>` : ''}
