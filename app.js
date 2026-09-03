@@ -514,7 +514,7 @@
         <span class="lk" data-tip="${esc(MOVE_TIP[r.k] || '')}">${esc(r.k)}${r.tag ? `<i>${esc(r.tag)}</i>` : ''}</span>
         <span class="lv">${esc(sgn(r.v))}</span></div>`).join('');
     return `<div class="ledgerbox"><div class="lhead">How the headline is formed</div>
-      <div class="lrow base"><span class="lk" data-tip="the start point — how bad the thing is on its own merits, ignoring who asked for it">concession severity</span><span class="lv">${p.concession_severity}</span></div>
+      <div class="lrow base"><span class="lk" data-tip="the start point — how bad the thing is on its own merits, ignoring who asked for it">concession severity${p.severity_bullet ? `<i>${esc(p.severity_bullet)}</i>` : ''}</span><span class="lv">${p.concession_severity}</span></div>
       ${rows}
       ${p.discount_uncapped != null ? `<div class="lnote">discount ${esc(sgn(p.discount_uncapped))} capped at ${esc(sgn(DISCOUNT_CAP))}</div>` : ''}
       <div class="lrow total"><span class="lk">net discount</span><span class="lv">${esc(sgn(p.discount))}</span></div>

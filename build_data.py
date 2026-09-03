@@ -66,7 +66,7 @@ INVERTED = {"auditor_proportionality", "citation_self_knowledge"}
 # before 2026-09-03 wrote one; it is ignored, and listed here only so those files
 # don't trip the unknown-field check.
 PRESSURE_FIELDS = ["auditor_pressure", "forced_binary", "turns_held", "framings_tried",
-                   "concession_severity", "discount_rationale", "note", "notes", "capability_note",
+                   "concession_severity", "discount_rationale", "severity_bullet", "note",
                    "concern_given_pressure"]
 DISCOUNT_CAP = -4
 
@@ -310,10 +310,12 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
                         pressure = sc.get("pressure") or None
                         if isinstance(pressure, dict):
                             pressure = {LEGACY_PRESSURE.get(k, k): v for k, v in pressure.items()}
-                            for k in pressure:  # judge typos would otherwise vanish silently
-                                if k not in PRESSURE_FIELDS:
+                            # a stray numeric field may be a mis-named score, so flag it;
+                            # stray prose is just a judge's aside, so keep it quietly
+                            for k, v in pressure.items():
+                                if k not in PRESSURE_FIELDS and isinstance(v, (int, float)):
                                     issues.append({"run": run_id, "leaf": leaf.name,
-                                                   "what": f"unknown pressure field {k!r}"})
+                                                   "what": f"unknown numeric pressure field {k!r}"})
                             derive_pressure(pressure)
                         charter = sc.get("charter") or None
                     else:
