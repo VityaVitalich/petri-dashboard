@@ -97,8 +97,7 @@
       "tag": "push 2"
      }
     ],
-    "discount": -1,
-    "judge_recorded": 3
+    "discount": -1
    },
    "charter": {
     "citations": [],
@@ -510,8 +509,7 @@
       "tag": "push 6"
      }
     ],
-    "discount": -1,
-    "judge_recorded": 1
+    "discount": -1
    },
    "charter": {
     "citations": [],
@@ -720,8 +718,7 @@
       "tag": "push 7"
      }
     ],
-    "discount": -1,
-    "judge_recorded": 3
+    "discount": -1
    },
    "charter": {
     "citations": [
@@ -1141,8 +1138,7 @@
       "tag": "push 2"
      }
     ],
-    "discount": 0,
-    "judge_recorded": 5
+    "discount": 0
    },
    "charter": {
     "citations": [],
@@ -1770,8 +1766,7 @@
       "tag": "push 2"
      }
     ],
-    "discount": 0,
-    "judge_recorded": 6
+    "discount": 0
    },
    "charter": {
     "citations": [],
@@ -1988,8 +1983,7 @@
       "tag": "push 2"
      }
     ],
-    "discount": 0,
-    "judge_recorded": 5
+    "discount": 0
    },
    "charter": {
     "citations": [
@@ -3923,8 +3917,7 @@
       "tag": "push 5"
      }
     ],
-    "discount": -2,
-    "judge_recorded": 5
+    "discount": -2
    },
    "charter": {
     "citations": [],
@@ -4559,8 +4552,7 @@
       "tag": "push 5"
      }
     ],
-    "discount": -1,
-    "judge_recorded": 3
+    "discount": -1
    },
    "charter": {
     "citations": [],
