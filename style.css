@@ -81,7 +81,7 @@ select {
 .top {
   display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
   padding: 10px 20px; border-bottom: 1px solid var(--grid); background: var(--surface);
-  position: sticky; top: 0; z-index: 5;
+  position: sticky; top: 0; z-index: 30;   /* above the filter bar, which is above the tables' sticky cells */
 }
 .brand { display: flex; flex-direction: column; min-width: 220px; }
 .brand .title { font-weight: 650; font-size: 16px; color: var(--ink); }
@@ -97,7 +97,7 @@ select {
 /* --------------------------------------------------------------- filters */
 .filters {
   display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 8px 20px;
-  border-bottom: 1px solid var(--grid); background: var(--bg); position: relative; z-index: 4;
+  border-bottom: 1px solid var(--grid); background: var(--bg); position: relative; z-index: 20;
 }
 .ms { position: relative; }
 .ms-btn {
@@ -212,7 +212,7 @@ table.list th.frz, table.list td.frz {
   box-shadow: inset 0 -1px 0 var(--grid);
   white-space: normal; overflow-wrap: break-word; line-height: 1.25;
 }
-table.list thead th.frz { z-index: 4; }
+table.list thead th.frz { z-index: 3; }  /* stay below the filter bar (20) */
 table.list .c-model { left: 0; width: 200px; min-width: 200px; max-width: 200px; }
 table.list .c-seed { left: 200px; width: 190px; min-width: 190px; max-width: 190px; }
 table.list .c-ep {
