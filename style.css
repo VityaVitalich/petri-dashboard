@@ -379,3 +379,16 @@ table.themes th.grp2 {
 table.themes th.grp2 + th.grp2, table.themes td:nth-child(2n+2):not(:nth-child(2)) { border-left: 1px solid var(--grid); }
 table.themes tr.drow td { border-top: 1px solid var(--axis); color: var(--ink); }
 table.themes tr.drow td.model { font-weight: 500; }
+
+/* validated — the only trusted seed tier (Viktor read real dialogues from it) */
+.okc { color: var(--ok, #1a7f37); }
+.status.validated { background: #1a7f37; color: #fff; }
+.valbox {
+  margin: 6px 0; padding: 7px 9px; border-left: 3px solid var(--ok, #1a7f37);
+  background: color-mix(in srgb, var(--ok, #1a7f37) 8%, transparent);
+  border-radius: 3px; font-size: 12.5px;
+}
+.valbox > div { color: var(--muted); margin-top: 3px; }
+
+/* deep-linked seeds (#/seeds/<id>) must clear the sticky top bar */
+details.seed { scroll-margin-top: 64px; }

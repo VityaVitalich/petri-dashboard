@@ -366,7 +366,8 @@
     const head1 = ths.map((th) => {
       const sd = [...new Set(ts.filter((t) => t.theme === th).map((t) => t.seed))];
       const off = sd.filter((s) => seedOf(s).status === 'disabled').length;
-      return `<th class="grp2" colspan="2">${esc(themeTitle(th))}<span class="meta"> · ${ts.filter((t) => t.theme === th).length} transcripts, ${sd.length} seeds${off ? `, ${off} since disabled` : ''}</span></th>`;
+      const val = sd.filter((s) => seedOf(s).status === 'validated').length;
+      return `<th class="grp2" colspan="2">${esc(themeTitle(th))}<span class="meta"> · ${ts.filter((t) => t.theme === th).length} transcripts, ${sd.length} seeds${val ? `, <b class="okc">${val} validated</b>` : ''}${off ? `, ${off} since disabled` : ''}</span></th>`;
     }).join('');
     const head2 = ths.map(() => '<th class="num" data-tip="mean concession_severity — what it agreed to, on its own merits">severity</th>'
       + '<th class="num" data-tip="mean concern | pressure — severity after the criterion\'s discounts">concern | pressure</th>').join('');
@@ -653,15 +654,17 @@
     seeds.forEach((s) => { if (s.theme && !themes.includes(s.theme)) themes.push(s.theme); });
     const focus = parts[0];
     const byTheme = themes.map((th) => {
-      const ss = seeds.filter((s) => s.theme === th).sort((x, y) => (x.status === y.status ? x.id.localeCompare(y.id) : x.status === 'active' ? -1 : 1));
+      const rank = (st) => (st === 'validated' ? 0 : st === 'active' ? 1 : 2);
+      const ss = seeds.filter((s) => s.theme === th).sort((x, y) => rank(x.status) - rank(y.status) || x.id.localeCompare(y.id));
       const meta = S.idx.themes[th] || {};
       if (!ss.length && !meta.n_candidates) return '';
-      return `<div class="seed-theme"><h2>${esc(meta.title || th)}<span class="hint">${ss.filter((s) => s.status === 'active').length} active · ${ss.filter((s) => s.status === 'disabled').length} disabled${meta.n_candidates ? ` · ${meta.n_candidates} candidates (not ported)` : ''}</span></h2>
+      return `<div class="seed-theme"><h2>${esc(meta.title || th)}<span class="hint"><b class="okc">${ss.filter((s) => s.status === 'validated').length} validated</b> · ${ss.filter((s) => s.status === 'active').length} active · ${ss.filter((s) => s.status === 'disabled').length} disabled${meta.n_candidates ? ` · ${meta.n_candidates} candidates (not ported)` : ''}</span></h2>
         <div class="note">${esc(meta.note || '')}</div>
         ${ss.map((s) => {
           const ts = S.idx.transcripts.filter((t) => t.seed === s.id).sort((x, y) => x.alias.localeCompare(y.alias) || y.utc.localeCompare(x.utc));
           return `<details class="seed" id="seed-${esc(s.id)}" ${focus === s.id ? 'open' : ''}><summary><span class="id">${esc(s.id)}</span><span class="status ${esc(s.status)}">${esc(s.status)}</span>${s.fit ? `<span class="badge">fit ${esc(s.fit)}</span>` : ''}${s.mode ? `<span class="badge">${esc(s.mode)}</span>` : ''}<span class="probes">${esc(s.probes || '')}</span><span class="badge">${ts.length} transcript${ts.length === 1 ? '' : 's'}</span></summary>
             ${s.disabled_reason ? `<div class="runs"><b>disabled:</b> ${esc(s.disabled_reason)}</div>` : ''}
+            ${s.validated ? `<div class="valbox"><b>✓ validated</b> by ${esc(s.validated.by || '?')} on ${esc(s.validated.date || '?')}<div>${esc(s.validated.evidence || '')}</div></div>` : ''}
             ${s.note ? `<div class="seed-note"><b>note in the repo</b><div>${esc(s.note)}</div></div>` : ''}
             ${ts.length ? `<div class="runs">${ts.map((t) => { const c = (t.pressure || {})[CGP]; const na = (t.scores || {}).needs_attention;
               const tag = typeof c === 'number' ? ` · concern|pressure ${c}` : (typeof na === 'number' ? ` · needs-attn ${na}` : ' · unjudged');
@@ -669,7 +672,7 @@
             <div class="body">${esc(s.body || '(no body)')}</div></details>`;
         }).join('')}</div>`;
     }).join('');
-    $('#view').innerHTML = `<div class="hint" style="color:var(--muted);font-size:12.5px">Seed catalog from <code>MR-Eval/petri/seeds</code>. Active seeds run; disabled are kept with a reason; candidates are un-ported upstream Petri seeds.</div>${byTheme}`;
+    $('#view').innerHTML = `<div class="hint" style="color:var(--muted);font-size:12.5px">Seed catalog from <code>MR-Eval/petri/seeds</code>. <b class=\"okc\">Validated</b> is the only trusted tier — Viktor read real dialogues from it and the promotion records that evidence. Active seeds also run but are not yet vetted; disabled are kept with a reason; candidates are un-ported upstream Petri seeds.</div>${byTheme}`;
     if (focus) { const el = $('#seed-' + CSS.escape(focus)); if (el) el.scrollIntoView({ block: 'start' }); }
   }
 
