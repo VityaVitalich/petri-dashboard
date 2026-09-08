@@ -392,3 +392,7 @@ table.themes tr.drow td.model { font-weight: 500; }
 
 /* deep-linked seeds (#/seeds/<id>) must clear the sticky top bar */
 details.seed { scroll-margin-top: 64px; }
+
+/* theme shown per item once the seed dropdown groups by status instead */
+.ms-item .lbl i.sub { font-style: normal; color: var(--muted); font-size: 11px; margin-left: 7px; }
+.ms-group .lbl { font-weight: 600; }

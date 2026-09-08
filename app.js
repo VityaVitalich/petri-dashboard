@@ -78,6 +78,9 @@
   };
   const seedOf = (id) => S.idx.seeds[id] || { id, theme: null, status: 'unknown', body: '' };
   const themeTitle = (t) => (S.idx.themes[t] && S.idx.themes[t].title) || t || '—';
+  // seed tiers, in promotion order: candidates -> active -> validated, or -> disabled
+  const STATUS_GROUP = { validated: '✓ validated — trusted', active: 'active — not yet vetted', disabled: '⨯ disabled — kept, excluded' };
+  const STATUS_RANK = { validated: 0, active: 1, disabled: 2 };
   const tById = (id) => S.idx.transcripts.find((t) => t.id === id);
 
   function stat(ts, d) {
@@ -121,15 +124,30 @@
     if (key === 'seeds') {
       const counts = {};
       idx.transcripts.forEach((t) => { counts[t.seed] = (counts[t.seed] || 0) + 1; });
-      return Object.keys(counts).map((s) => ({ v: s, label: s, n: counts[s], tip: seedOf(s).probes || '', group: themeTitle(seedOf(s).theme) }))
-        .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+      // Group by STATUS first, not theme: `validated` is the only trusted tier, so the
+      // usual move is "select just the trusted instruments" — one group toggle. Theme
+      // stays visible per item and still matches the type-to-filter box.
+      return Object.keys(counts).map((s) => {
+        const sd = seedOf(s);
+        const v = sd.validated;
+        return {
+          v: s,
+          label: s,
+          sub: themeTitle(sd.theme),
+          n: counts[s],
+          tip: [sd.probes || '', v ? `✓ validated ${v.date} by ${v.by}: ${v.evidence}` : '',
+                sd.disabled_reason ? `⨯ disabled: ${sd.disabled_reason}` : ''].filter(Boolean).join('\n\n'),
+          group: STATUS_GROUP[sd.status] || `? ${sd.status}`,
+          _rank: STATUS_RANK[sd.status] === undefined ? 9 : STATUS_RANK[sd.status],
+        };
+      }).sort((a, b) => a._rank - b._rank || a.sub.localeCompare(b.sub) || a.label.localeCompare(b.label));
     }
     return idx.runs.map((r) => ({ v: r.id, label: `${utcShort(r.utc)} · ${r.protocol || 'unspecified'}` + (r.note ? ` · ${r.note.length > 40 ? r.note.slice(0, 38) + '…' : r.note}` : ''), n: r.n_transcripts, tip: `${r.id}\nprotocol: ${r.protocol || 'unspecified'}\n${r.note || ''}`.trim(), group: r.alias, utc: r.utc }))
       .sort((a, b) => a.group.localeCompare(b.group) || b.utc.localeCompare(a.utc));
   }
   const allValues = (key) => filterItems(key).map((it) => it.v);
   function matches(it, q) {
-    const hay = `${it.label} ${it.group}`.toLowerCase();
+    const hay = `${it.label} ${it.group} ${it.sub || ''}`.toLowerCase();
     return q.toLowerCase().split(/\s+/).filter(Boolean).every((tok) => hay.includes(tok));
   }
   function saveFilters() {
@@ -168,7 +186,7 @@
         const on = gi.filter((x) => S.f[key].has(x.v)).length;
         out += `<label class="ms-group"><input type="checkbox" data-group="${esc(g)}" ${on === gi.length ? 'checked' : ''} ${on && on < gi.length ? 'data-ind="1"' : ''}><span class="lbl">${esc(g)}</span><span class="cnt">${gi.length}</span></label>`;
       }
-      out += `<label class="ms-item" data-tip="${esc(it.tip)}"><input type="checkbox" data-v="${esc(it.v)}" ${S.f[key].has(it.v) ? 'checked' : ''}><span class="lbl">${esc(it.label)}</span><span class="cnt">${it.n}</span></label>`;
+      out += `<label class="ms-item" data-tip="${esc(it.tip)}"><input type="checkbox" data-v="${esc(it.v)}" ${S.f[key].has(it.v) ? 'checked' : ''}><span class="lbl">${esc(it.label)}${it.sub ? `<i class="sub">${esc(it.sub)}</i>` : ''}</span><span class="cnt">${it.n}</span></label>`;
     });
     return out || '<div class="ms-empty">no matches</div>';
   }
@@ -435,7 +453,11 @@
     const scored = ts.filter((t) => t.scored);
     const models = [...new Set(ts.map((t) => t.alias))].sort();
     const seedsN = new Set(ts.map((t) => t.seed)).size;
-    const activeSeeds = Object.values(S.idx.seeds).filter((s) => s.status === 'active').length;
+    // runnable = validated + active; a run draws from both tiers, so `active` alone
+    // undercounts the denominator once seeds start getting promoted
+    const seedsByStatus = (st) => Object.values(S.idx.seeds).filter((s) => s.status === st).length;
+    const nValidated = seedsByStatus('validated');
+    const runnableSeeds = nValidated + seedsByStatus('active');
     // worst transcript by the current headline, whichever rubric it was scored on
     const topKey = scored.some((t) => t.pressure && typeof t.pressure[CGP] === 'number')
       ? { label: 'highest concern | pressure', get: (t) => (t.pressure || {})[CGP] }
@@ -451,7 +473,7 @@
       <div class="tiles">
         <div class="tile"><div class="k">transcripts</div><div class="v">${ts.length}</div><div class="d">${scored.length} judged · ${ts.length - scored.length} unscored</div></div>
         <div class="tile"><div class="k">models</div><div class="v">${models.length}</div><div class="d">${S.idx.runs.filter((r) => S.f.runs.has(r.id)).length} runs selected</div></div>
-        <div class="tile"><div class="k">seeds audited</div><div class="v">${seedsN}</div><div class="d">of ${activeSeeds} active seeds</div></div>
+        <div class="tile"><div class="k">seeds audited</div><div class="v">${seedsN}</div><div class="d">of ${runnableSeeds} runnable · <b class="okc">${nValidated} validated</b></div></div>
         <div class="tile"><div class="k">${topKey.label}</div><div class="v">${top && topKey.get(top) != null ? topKey.get(top) : '–'}</div><div class="d">${top ? `<a href="#/t/${enc(top.id)}">${esc(top.alias)} · ${esc(top.seed)} e${top.epoch}</a>` : 'no judged transcripts'}</div></div>
       </div>
       ${themeTable(models, ts)}
