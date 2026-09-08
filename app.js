@@ -130,17 +130,20 @@
       return Object.keys(counts).map((s) => {
         const sd = seedOf(s);
         const v = sd.validated;
+        const st = STATUS_GROUP[sd.status] || `? ${sd.status}`;
+        const th = themeTitle(sd.theme);
         return {
           v: s,
           label: s,
-          sub: themeTitle(sd.theme),
           n: counts[s],
           tip: [sd.probes || '', v ? `✓ validated ${v.date} by ${v.by}: ${v.evidence}` : '',
                 sd.disabled_reason ? `⨯ disabled: ${sd.disabled_reason}` : ''].filter(Boolean).join('\n\n'),
-          group: STATUS_GROUP[sd.status] || `? ${sd.status}`,
+          group1: th,                 // outer: theme, as it was before
+          group: `${th} · ${st}`,     // inner: validity tier within the theme
+          glabel: st,
           _rank: STATUS_RANK[sd.status] === undefined ? 9 : STATUS_RANK[sd.status],
         };
-      }).sort((a, b) => a._rank - b._rank || a.sub.localeCompare(b.sub) || a.label.localeCompare(b.label));
+      }).sort((a, b) => a.group1.localeCompare(b.group1) || a._rank - b._rank || a.label.localeCompare(b.label));
     }
     return idx.runs.map((r) => ({ v: r.id, label: `${utcShort(r.utc)} · ${r.protocol || 'unspecified'}` + (r.note ? ` · ${r.note.length > 40 ? r.note.slice(0, 38) + '…' : r.note}` : ''), n: r.n_transcripts, tip: `${r.id}\nprotocol: ${r.protocol || 'unspecified'}\n${r.note || ''}`.trim(), group: r.alias, utc: r.utc }))
       .sort((a, b) => a.group.localeCompare(b.group) || b.utc.localeCompare(a.utc));
@@ -178,15 +181,23 @@
     const q = MS.q[key];
     const shown = items.filter((it) => matches(it, q));
     const grouped = new Set(items.map((it) => it.group)).size > 1;
-    let out = '', g = null;
+    const twoLevel = items.some((it) => it.group1);
+    let out = '', g = null, g1 = null;
     shown.forEach((it) => {
+      if (twoLevel && it.group1 !== g1) {
+        g1 = it.group1;
+        const gi1 = shown.filter((x) => x.group1 === g1);
+        const on1 = gi1.filter((x) => S.f[key].has(x.v)).length;
+        out += `<label class="ms-group lvl1"><input type="checkbox" data-group1="${esc(g1)}" ${on1 === gi1.length ? 'checked' : ''} ${on1 && on1 < gi1.length ? 'data-ind="1"' : ''}><span class="lbl">${esc(g1)}</span><span class="cnt">${gi1.length}</span></label>`;
+        g = null;   // force the inner header to re-emit inside the new theme
+      }
       if (grouped && it.group !== g) {
         g = it.group;
         const gi = shown.filter((x) => x.group === g);
         const on = gi.filter((x) => S.f[key].has(x.v)).length;
-        out += `<label class="ms-group"><input type="checkbox" data-group="${esc(g)}" ${on === gi.length ? 'checked' : ''} ${on && on < gi.length ? 'data-ind="1"' : ''}><span class="lbl">${esc(g)}</span><span class="cnt">${gi.length}</span></label>`;
+        out += `<label class="ms-group${twoLevel ? ' lvl2' : ''}"><input type="checkbox" data-group="${esc(g)}" ${on === gi.length ? 'checked' : ''} ${on && on < gi.length ? 'data-ind="1"' : ''}><span class="lbl">${esc(it.glabel || g)}</span><span class="cnt">${gi.length}</span></label>`;
       }
-      out += `<label class="ms-item" data-tip="${esc(it.tip)}"><input type="checkbox" data-v="${esc(it.v)}" ${S.f[key].has(it.v) ? 'checked' : ''}><span class="lbl">${esc(it.label)}${it.sub ? `<i class="sub">${esc(it.sub)}</i>` : ''}</span><span class="cnt">${it.n}</span></label>`;
+      out += `<label class="ms-item${twoLevel ? ' nested' : ''}" data-tip="${esc(it.tip)}"><input type="checkbox" data-v="${esc(it.v)}" ${S.f[key].has(it.v) ? 'checked' : ''}><span class="lbl">${esc(it.label)}</span><span class="cnt">${it.n}</span></label>`;
     });
     return out || '<div class="ms-empty">no matches</div>';
   }
@@ -263,6 +274,9 @@
     } else if (e.target.dataset.group != null) {
       const g = e.target.dataset.group, on = e.target.checked;
       filterItems(key).filter((it) => it.group === g && matches(it, MS.q[key])).forEach((it) => { if (on) S.f[key].add(it.v); else S.f[key].delete(it.v); });
+    } else if (e.target.dataset.group1 != null) {
+      const g1 = e.target.dataset.group1, on = e.target.checked;
+      filterItems(key).filter((it) => it.group1 === g1 && matches(it, MS.q[key])).forEach((it) => { if (on) S.f[key].add(it.v); else S.f[key].delete(it.v); });
     }
     changed(key);
   });
