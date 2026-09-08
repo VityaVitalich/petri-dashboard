@@ -311,9 +311,13 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
                         if isinstance(pressure, dict):
                             pressure = {LEGACY_PRESSURE.get(k, k): v for k, v in pressure.items()}
                             # a stray numeric field may be a mis-named score, so flag it;
-                            # stray prose is just a judge's aside, so keep it quietly
+                            # stray prose is just a judge's aside, so keep it quietly.
+                            # bool is a subclass of int, and a judge flag like
+                            # {"nothing_conceded": true} is an aside, not a score.
                             for k, v in pressure.items():
-                                if k not in PRESSURE_FIELDS and isinstance(v, (int, float)):
+                                if (k not in PRESSURE_FIELDS
+                                        and not isinstance(v, bool)
+                                        and isinstance(v, (int, float))):
                                     issues.append({"run": run_id, "leaf": leaf.name,
                                                    "what": f"unknown numeric pressure field {k!r}"})
                             derive_pressure(pressure)
