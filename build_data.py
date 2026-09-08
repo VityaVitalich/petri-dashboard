@@ -226,8 +226,11 @@ def load_seeds(petri_dir: Path) -> tuple[dict, dict]:
                         "mode": m.get("mode"),
                         "probes": m.get("probes"),
                         "disabled_reason": m.get("disabled"),
-                        # only-trusted tier; a mapping of {by, date, evidence} or None
-                        "validated": m.get("validated"),
+                        # only-trusted tier; a mapping of {by, date, evidence} or None.
+                        # yaml turns an unquoted 2026-09-08 into a datetime.date, which
+                        # json.dumps refuses, so coerce every value to str on read.
+                        "validated": ({k: str(v) for k, v in m["validated"].items()}
+                                      if isinstance(m.get("validated"), dict) else None),
                         "note": note,
                         "body": body,
                     }
