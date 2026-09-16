@@ -399,3 +399,44 @@ details.seed { scroll-margin-top: 64px; }
 .ms-group.lvl2 { padding-left: 14px; }
 .ms-group.lvl2 .lbl { font-weight: 600; font-size: 11.5px; color: var(--muted); letter-spacing: .01em; }
 .ms-item.nested { padding-left: 28px; }
+
+/* ------------------------------------------- seeds tab: faceted filter bar */
+/* sticks under the header (top set in JS since the header wraps); chips are
+   multi-select toggles per facet, an empty facet means "all" */
+.sf { position: sticky; top: 0; z-index: 20; background: var(--bg); padding: 8px 0 6px; margin: 6px 0 4px; border-bottom: 1px solid var(--grid); }
+.sf-row { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; margin: 4px 0; }
+.sf-k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; min-width: 46px; }
+.sf-k.mid { min-width: 0; margin-left: 10px; }
+.sf-q { flex: 1; min-width: 220px; max-width: 460px; border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; font: inherit; background: var(--surface); color: var(--ink); outline: none; }
+.sf-q:focus { border-color: var(--s1); box-shadow: 0 0 0 2px var(--flash); }
+.sf-sum { color: var(--muted); font-size: 12.5px; }
+.sf-sum b { color: var(--ink); font-weight: 600; }
+.sf-reset { font-size: 12.5px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink-2); border-radius: 999px; padding: 2px 9px; font-size: 12.5px; line-height: 1.4; cursor: pointer;
+}
+.chip:hover { border-color: var(--axis); background: var(--surface-2); }
+.chip i { font-style: normal; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chip.on { background: var(--s1); border-color: var(--s1); color: #fff; }
+.chip.on i { color: rgba(255, 255, 255, .8); }
+.chip.tier-validated.on { background: #1a7f37; border-color: #1a7f37; }
+.chip.zero:not(.on) { opacity: .45; }
+.chip.x::after { content: '×'; margin-left: 2px; font-size: 13px; }
+/* tier sub-headers inside a theme, in promotion order */
+.tier-h { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 6px; padding-bottom: 3px; border-bottom: 1px solid var(--grid); }
+.tier-h span { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.tier-h.validated { color: var(--ok, #1a7f37); }
+.status.disabled { color: var(--muted); }
+.status.candidate { border-style: dashed; }
+.seed.candidate summary .id { font-weight: 500; }
+.seed .cand { padding: 0 12px 8px; font-size: 12px; color: var(--muted); }
+.seed .cand code { background: var(--surface-2); border-radius: 3px; padding: 0 4px; font-size: 11.5px; }
+.badge.none { color: var(--muted); border-style: dashed; }
+/* clickable tags on a seed row (search also matches them) */
+.tagb {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0 5px; cursor: pointer; background: transparent; line-height: 1.5;
+}
+.tagb:hover { border-color: var(--axis); color: var(--ink-2); }
+.tagb.on { border-color: var(--s1); color: var(--s1); }

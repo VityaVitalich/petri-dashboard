@@ -79,8 +79,8 @@
   const seedOf = (id) => S.idx.seeds[id] || { id, theme: null, status: 'unknown', body: '' };
   const themeTitle = (t) => (S.idx.themes[t] && S.idx.themes[t].title) || t || '—';
   // seed tiers, in promotion order: candidates -> active -> validated, or -> disabled
-  const STATUS_GROUP = { validated: '✓ validated — trusted', active: 'active — not yet vetted', disabled: '⨯ disabled — kept, excluded' };
-  const STATUS_RANK = { validated: 0, active: 1, disabled: 2 };
+  const STATUS_GROUP = { validated: '✓ validated — trusted', active: 'active — not yet vetted', disabled: '⨯ disabled — kept, excluded', candidate: 'candidate — not ported' };
+  const STATUS_RANK = { validated: 0, active: 1, disabled: 2, candidate: 3 };
   const tById = (id) => S.idx.transcripts.find((t) => t.id === id);
 
   function stat(ts, d) {
@@ -684,33 +684,166 @@
   }
 
   // --------------------------------------------------------------- seeds ----
-  function renderSeeds(parts) {
-    const seeds = Object.values(S.idx.seeds);
+  // Faceted catalog browser over ALL four tiers (validated / active / disabled /
+  // candidate). Facets live in the hash query — #/seeds?theme=values,deception&tier=
+  // validated&fit=A&mode=new&tag=bias&runs=1&q=text — so a filtered view is a
+  // shareable link and the back button works; the Seeds tab remembers the last
+  // query. #/seeds/<id> deep-links one seed: it is always shown and opened.
+  const SF_FACETS = ['theme', 'tier', 'fit', 'mode', 'tag'];
+  const TIER_ORDER = ['validated', 'active', 'disabled', 'candidate'];
+  const TIER_LABEL = { validated: '✓ validated', active: 'active', disabled: '⨯ disabled', candidate: 'candidate' };
+  const TIER_HINT = { validated: 'trusted — Viktor read real dialogues from it', active: 'runs, but not yet vetted',
+                      disabled: 'kept with a reason, excluded from runs', candidate: 'raw upstream Petri seed, not ported yet' };
+  const FIT_HINT = { A: 'fit A — chat-native & on-target for a 3B', B: 'fit B — adapted, expect weaker signal', C: 'fit C — skip for a chat-only 3B' };
+  const MODE_HINT = { verbatim: 'upstream body unchanged', adapted: 'edited for the no-sysprompt, no-tools 3B target', new: 'pbmt-authored, no Petri upstream' };
+  const HIDDEN_TAGS = new Set(['pbmt_pilot', 'disabled']);   // on every ported seed / duplicates the tier
+  let SF = null;        // facet state of the open Seeds view (null elsewhere)
+  let SF_SEEDS = [];    // seeds with their transcript counts, computed once per render
+
+  function sfFromQuery(q) {
+    const st = { q: (q.get('q') || '').trim(), runs: q.get('runs') === '1' };
+    SF_FACETS.forEach((f) => { st[f] = new Set((q.get(f) || '').split(',').map((s) => s.trim()).filter(Boolean)); });
+    return st;
+  }
+  function sfToQuery(st) {
+    const parts = [];
+    SF_FACETS.forEach((f) => { if (st[f].size) parts.push(`${f}=${[...st[f]].map(enc).join(',')}`); });
+    if (st.runs) parts.push('runs=1');
+    if (st.q) parts.push(`q=${enc(st.q)}`);
+    return parts.length ? '?' + parts.join('&') : '';
+  }
+  const sfVal = (s, f) => (f === 'theme' ? (s.theme || '') : f === 'tier' ? s.status : f === 'fit' ? (s.fit || '') : f === 'mode' ? (s.mode || '') : '');
+  // does seed `s` pass every facet except `skip` (used for the per-chip counts)
+  function sfMatch(s, st, skip) {
+    for (const f of ['theme', 'tier', 'fit', 'mode']) {
+      if (f !== skip && st[f].size && !st[f].has(sfVal(s, f))) return false;
+    }
+    if (skip !== 'tag' && st.tag.size && ![...st.tag].every((tg) => (s.tags || []).includes(tg))) return false;
+    if (skip !== 'runs' && st.runs && !s._nts) return false;
+    if (skip !== 'q' && st.q) {
+      const hay = `${s.id} ${s.theme || ''} ${themeTitle(s.theme)} ${s.status} ${(s.tags || []).join(' ')} ${s.probes || ''} ${s.disabled_reason || ''} ${s.body || ''}`.toLowerCase();
+      if (!st.q.toLowerCase().split(/\s+/).filter(Boolean).every((tok) => hay.includes(tok))) return false;
+    }
+    return true;
+  }
+  const sfThemes = () => {
     const themes = Object.keys(S.idx.themes);
-    seeds.forEach((s) => { if (s.theme && !themes.includes(s.theme)) themes.push(s.theme); });
-    const focus = parts[0];
-    const byTheme = themes.map((th) => {
-      const rank = (st) => (st === 'validated' ? 0 : st === 'active' ? 1 : 2);
-      const ss = seeds.filter((s) => s.theme === th).sort((x, y) => rank(x.status) - rank(y.status) || x.id.localeCompare(y.id));
+    SF_SEEDS.forEach((s) => { if (s.theme && !themes.includes(s.theme)) themes.push(s.theme); });
+    return themes;
+  };
+
+  function sfChips(st) {
+    const seeds = SF_SEEDS;
+    const chip = (f, v, label, hint, extra) => {
+      const n = seeds.filter((s) => sfMatch(s, st, f) && (f === 'runs' ? s._nts > 0 : sfVal(s, f) === v)).length;
+      const on = f === 'runs' ? st.runs : st[f].has(v);
+      return `<button type="button" class="chip${on ? ' on' : ''}${n ? '' : ' zero'} ${extra || ''}" data-f="${esc(f)}" data-v="${esc(v)}"${hint ? ` data-tip="${esc(hint)}"` : ''}>${label}<i>${n}</i></button>`;
+    };
+    const row = (k, inner) => `<div class="sf-row"><span class="sf-k">${k}</span>${inner}</div>`;
+    const themes = sfThemes().map((th) => chip('theme', th, esc(themeTitle(th)), (S.idx.themes[th] || {}).note || th)).join('');
+    const tiers = TIER_ORDER.map((t) => chip('tier', t, TIER_LABEL[t], TIER_HINT[t], `tier-${t}`)).join('');
+    const fits = ['A', 'B', 'C'].map((f) => chip('fit', f, `fit ${f}`, FIT_HINT[f])).join('');
+    const modes = ['verbatim', 'adapted', 'new'].map((m) => chip('mode', m, m, MODE_HINT[m])).join('');
+    const runs = chip('runs', '1', 'has transcripts', 'only seeds that have been audited at least once');
+    const tags = [...st.tag].map((tg) => `<button type="button" class="chip on x" data-f="tag" data-v="${esc(tg)}" data-tip="tag filter — click to remove">${esc(tg)}</button>`).join('');
+    return row('theme', themes) + row('tier', tiers)
+      + row('fit', `${fits}<span class="sf-k mid">mode</span>${modes}<span class="sf-k mid">runs</span>${runs}${tags ? `<span class="sf-k mid">tag</span>${tags}` : ''}`);
+  }
+
+  function seedRow(s, st, focus) {
+    const ts = S.idx.transcripts.filter((t) => t.seed === s.id).sort((x, y) => x.alias.localeCompare(y.alias) || y.utc.localeCompare(x.utc));
+    const tags = (s.tags || []).filter((tg) => !HIDDEN_TAGS.has(tg));
+    return `<details class="seed ${esc(s.status)}" id="seed-${esc(s.id)}" ${focus === s.id ? 'open' : ''}><summary><span class="id">${esc(s.id)}</span><span class="status ${esc(s.status)}" data-tip="${esc(TIER_HINT[s.status] || '')}">${esc(s.status)}</span>${s.fit ? `<span class="badge" data-tip="${esc(FIT_HINT[s.fit] || '')}">fit ${esc(s.fit)}</span>` : ''}${s.mode ? `<span class="badge" data-tip="${esc(MODE_HINT[s.mode] || '')}">${esc(s.mode)}</span>` : ''}<span class="probes">${esc(s.probes || '')}</span>${tags.map((tg) => `<button type="button" class="tagb${st.tag.has(tg) ? ' on' : ''}" data-tag="${esc(tg)}" data-tip="filter by tag ${esc(tg)}">${esc(tg)}</button>`).join('')}<span class="badge${ts.length ? '' : ' none'}">${ts.length} transcript${ts.length === 1 ? '' : 's'}</span></summary>
+      ${s.status === 'candidate' ? '<div class="cand">Raw upstream Petri seed, not ported: no Target-setup preamble, no <code>seeds.yaml</code> entry. Fit and description come from <code>CATALOG.md</code>. To promote it, move the file into the theme’s <code>active/</code>, adapt it, add a manifest entry, then <code>list_seeds.py --check</code>.</div>' : ''}
+      ${s.disabled_reason ? `<div class="runs"><b>disabled:</b> ${esc(s.disabled_reason)}</div>` : ''}
+      ${s.validated ? `<div class="valbox"><b>✓ validated</b> by ${esc(s.validated.by || '?')} on ${esc(s.validated.date || '?')}<div>${esc(s.validated.evidence || '')}</div></div>` : ''}
+      ${s.note ? `<div class="seed-note"><b>note in the repo</b><div>${esc(s.note)}</div></div>` : ''}
+      ${ts.length ? `<div class="runs">${ts.map((t) => { const c = (t.pressure || {})[CGP]; const na = (t.scores || {}).needs_attention;
+        const tag = typeof c === 'number' ? ` · concern|pressure ${c}` : (typeof na === 'number' ? ` · needs-attn ${na}` : ' · unjudged');
+        return `<a href="#/t/${enc(t.id)}">${esc(t.alias)} e${t.epoch} · ${esc(utcShort(t.utc))}${tag}</a>`; }).join('')}</div>` : ''}
+      <div class="body">${esc(s.body || '(no body)')}</div></details>`;
+  }
+
+  function sfList(st, focus) {
+    const seeds = SF_SEEDS;
+    const shown = seeds.filter((s) => s.id === focus || sfMatch(s, st));
+    const rank = (t) => { const i = TIER_ORDER.indexOf(t); return i < 0 ? 9 : i; };
+    const html = sfThemes().map((th) => {
+      const all = seeds.filter((s) => s.theme === th);
+      const ss = shown.filter((s) => s.theme === th).sort((x, y) => rank(x.status) - rank(y.status) || x.id.localeCompare(y.id));
+      if (!ss.length) return '';
       const meta = S.idx.themes[th] || {};
-      if (!ss.length && !meta.n_candidates) return '';
-      return `<div class="seed-theme"><h2>${esc(meta.title || th)}<span class="hint"><b class="okc">${ss.filter((s) => s.status === 'validated').length} validated</b> · ${ss.filter((s) => s.status === 'active').length} active · ${ss.filter((s) => s.status === 'disabled').length} disabled${meta.n_candidates ? ` · ${meta.n_candidates} candidates (not ported)` : ''}</span></h2>
+      const cnt = (t) => all.filter((s) => s.status === t).length;
+      const tiers = TIER_ORDER.filter((t) => ss.some((s) => s.status === t));
+      return `<div class="seed-theme" id="theme-${esc(th)}"><h2>${esc(meta.title || th)}<span class="hint">${ss.length < all.length ? `<b>${ss.length}</b> of ${all.length} shown` : `${all.length} seeds`} · <b class="okc">${cnt('validated')} validated</b> · ${cnt('active')} active · ${cnt('disabled')} disabled · ${cnt('candidate')} candidates</span></h2>
         <div class="note">${esc(meta.note || '')}</div>
-        ${ss.map((s) => {
-          const ts = S.idx.transcripts.filter((t) => t.seed === s.id).sort((x, y) => x.alias.localeCompare(y.alias) || y.utc.localeCompare(x.utc));
-          return `<details class="seed" id="seed-${esc(s.id)}" ${focus === s.id ? 'open' : ''}><summary><span class="id">${esc(s.id)}</span><span class="status ${esc(s.status)}">${esc(s.status)}</span>${s.fit ? `<span class="badge">fit ${esc(s.fit)}</span>` : ''}${s.mode ? `<span class="badge">${esc(s.mode)}</span>` : ''}<span class="probes">${esc(s.probes || '')}</span><span class="badge">${ts.length} transcript${ts.length === 1 ? '' : 's'}</span></summary>
-            ${s.disabled_reason ? `<div class="runs"><b>disabled:</b> ${esc(s.disabled_reason)}</div>` : ''}
-            ${s.validated ? `<div class="valbox"><b>✓ validated</b> by ${esc(s.validated.by || '?')} on ${esc(s.validated.date || '?')}<div>${esc(s.validated.evidence || '')}</div></div>` : ''}
-            ${s.note ? `<div class="seed-note"><b>note in the repo</b><div>${esc(s.note)}</div></div>` : ''}
-            ${ts.length ? `<div class="runs">${ts.map((t) => { const c = (t.pressure || {})[CGP]; const na = (t.scores || {}).needs_attention;
-              const tag = typeof c === 'number' ? ` · concern|pressure ${c}` : (typeof na === 'number' ? ` · needs-attn ${na}` : ' · unjudged');
-              return `<a href="#/t/${enc(t.id)}">${esc(t.alias)} e${t.epoch} · ${esc(utcShort(t.utc))}${tag}</a>`; }).join('')}</div>` : ''}
-            <div class="body">${esc(s.body || '(no body)')}</div></details>`;
+        ${tiers.map((t) => {
+          const rows = ss.filter((s) => s.status === t);
+          return `${tiers.length > 1 ? `<div class="tier-h ${esc(t)}">${TIER_LABEL[t]} <span>${rows.length}</span> · ${esc(TIER_HINT[t])}</div>` : ''}${rows.map((s) => seedRow(s, st, focus)).join('')}`;
         }).join('')}</div>`;
     }).join('');
-    $('#view').innerHTML = `<div class="hint" style="color:var(--muted);font-size:12.5px">Seed catalog from <code>MR-Eval/petri/seeds</code>. <b class=\"okc\">Validated</b> is the only trusted tier — Viktor read real dialogues from it and the promotion records that evidence. Active seeds also run but are not yet vetted; disabled are kept with a reason; candidates are un-ported upstream Petri seeds.</div>${byTheme}`;
+    return { html: html || '<div class="empty">no seeds match these filters — <a href="#/seeds">reset</a></div>', n: shown.length };
+  }
+
+  function paintSeeds(focus) {
+    const st = SF;
+    const list = sfList(st, focus);
+    $('#sf-chips').innerHTML = sfChips(st);
+    $('#sf-list').innerHTML = list.html;
+    $('#sf-n').textContent = list.n;
+    const qs = sfToQuery(st);
+    $('#tabs a[data-view="seeds"]').setAttribute('href', `#/seeds${qs}`);
+    // the bar sticks under the (sticky, wrapping) header; deep-linked seeds must clear both
+    const topH = $('.top').offsetHeight;
+    $('#sf').style.top = topH + 'px';
+    const barH = $('#sf').offsetHeight;
+    document.querySelectorAll('details.seed').forEach((d) => { d.style.scrollMarginTop = (topH + barH + 8) + 'px'; });
+  }
+  // called on every facet change: rewrite the hash without a hashchange (no re-render,
+  // so the search box keeps focus), remember it on the tab, repaint chips + list
+  function sfSync() {
+    const qs = sfToQuery(SF);
+    history.replaceState(null, '', `${location.pathname}${location.search}#/seeds${qs}`);
+    paintSeeds(null);
+  }
+
+  function renderSeeds(parts, query) {
+    const focus = parts[0] || null;
+    SF = sfFromQuery(query || new URLSearchParams());
+    const counts = {};
+    S.idx.transcripts.forEach((t) => { counts[t.seed] = (counts[t.seed] || 0) + 1; });
+    SF_SEEDS = Object.values(S.idx.seeds).map((s) => ({ ...s, _nts: counts[s.id] || 0 }));
+    const total = SF_SEEDS.length;
+    $('#view').innerHTML = `<div class="hint" style="color:var(--muted);font-size:12.5px">Seed catalog from <code>MR-Eval/petri/seeds</code> — all ${total} files in the tree. <b class="okc">Validated</b> is the only trusted tier — Viktor read real dialogues from it and the promotion records that evidence. Active seeds also run but are not yet vetted; disabled are kept with a reason; candidates are un-ported upstream Petri seeds listed for triage. Chips filter (click again to clear); tags on a row are clickable; the filter is in the URL.</div>
+      <div class="sf" id="sf">
+        <div class="sf-row"><input class="sf-q" id="sf-q" type="search" placeholder="search id, description, tags, body…" value="${esc(SF.q)}" autocomplete="off" spellcheck="false"><span class="sf-sum"><b id="sf-n">0</b> of ${total} seeds</span><a href="#/seeds" class="sf-reset">reset</a></div>
+        <div id="sf-chips"></div>
+      </div>
+      <div id="sf-list" class="seed-list"></div>`;
+    paintSeeds(focus);
     if (focus) { const el = $('#seed-' + CSS.escape(focus)); if (el) el.scrollIntoView({ block: 'start' }); }
   }
+
+  // seeds-tab interactions (the view element persists; only its innerHTML changes)
+  $('#view').addEventListener('click', (e) => {
+    if (!SF || !$('#sf')) return;
+    const chip = e.target.closest('.chip[data-f]');
+    const tag = e.target.closest('.tagb[data-tag]');
+    if (!chip && !tag) return;
+    e.preventDefault();     // a click inside <summary> would otherwise toggle the row
+    const f = chip ? chip.dataset.f : 'tag';
+    const v = chip ? chip.dataset.v : tag.dataset.tag;
+    if (f === 'runs') SF.runs = !SF.runs;
+    else if (SF[f].has(v)) SF[f].delete(v);
+    else SF[f].add(v);
+    sfSync();
+  });
+  let sfTimer = null;
+  $('#view').addEventListener('input', (e) => {
+    if (e.target.id !== 'sf-q' || !SF) return;
+    clearTimeout(sfTimer);
+    sfTimer = setTimeout(() => { SF.q = e.target.value.trim(); sfSync(); }, 150);
+  });
 
   // --------------------------------------------------------------- rubric ----
   // Minimal markdown: headings, tables, lists, paragraphs, `code`, **bold**.
@@ -836,17 +969,22 @@
   // ------------------------------------------------------------- routing ----
   function route() {
     if (!S.idx) return;
-    const raw = location.hash.replace(/^#\/?/, '');
+    let raw = location.hash.replace(/^#\/?/, '');
+    // an optional ?query after the path carries view state (the Seeds tab's facets)
+    const qi = raw.indexOf('?');
+    const query = new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : '');
+    if (qi >= 0) raw = raw.slice(0, qi);
     const parts = raw.split('/').map((p) => { try { return decodeURIComponent(p); } catch (e) { return p; } });
     const view = parts[0] || 'overview';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.view === (view === 't' ? 'transcripts' : view)));
     $('#filters').hidden = !(view === 'overview' || view === 'transcripts');
+    if (view !== 'seeds') SF = null;   // seeds-tab handlers go inert off the tab
     const p = Promise.resolve().then(() => {
       if (view === 'overview') return renderOverview();
       if (view === 'transcripts') return renderTranscripts();
       if (view === 't') return renderTranscript(parts[1]);
       if (view === 'compare') return renderCompare(parts.slice(1));
-      if (view === 'seeds') return renderSeeds(parts.slice(1));
+      if (view === 'seeds') return renderSeeds(parts.slice(1), query);
       if (view === 'rubric') return renderRubric(parts.slice(1));
       $('#view').innerHTML = `<div class="empty">unknown view <code>${esc(view)}</code></div>`;
     });
