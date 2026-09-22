@@ -385,6 +385,10 @@ table.themes tr.drow td.model { font-weight: 500; }
 
 /* validated — the only trusted seed tier (Viktor read real dialogues from it) */
 .okc { color: var(--ok, #1a7f37); }
+/* a pair whose interval covers zero: shown, but not competing for the eye */
+table.list tr.faint td { color: var(--muted); }
+table.list tr.faint td.model { color: var(--ink-2); }
+details.box .body.nw { white-space: normal; }
 .status.validated { background: #1a7f37; color: #fff; }
 .valbox {
   margin: 6px 0; padding: 7px 9px; border-left: 3px solid var(--ok, #1a7f37);

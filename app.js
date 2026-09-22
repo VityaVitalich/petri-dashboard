@@ -84,9 +84,41 @@
   const STATUS_RANK = { validated: 0, active: 1, disabled: 2, candidate: 3 };
   const tById = (id) => S.idx.transcripts.find((t) => t.id === id);
 
+  // ------------------------------------------------------ uncertainty ----
+  // Epochs of one seed are NOT independent draws: the seed fixes the scenario, and
+  // in this corpus 58% of the variance in a leaf score sits between seeds. Pooling
+  // leaves as if they were independent makes the interval about 3x too narrow. So
+  // the unit of replication here is the seed — mean within a seed, then a t
+  // interval over those seed means. `n` stays the leaf count (what was judged);
+  // `ci.k` is the number that actually carries the uncertainty.
+  const T95 = [0, 12.71, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
+               2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
+               2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042];
+  const t95 = (df) => (df < 1 ? null : df <= 30 ? T95[df] : df <= 60 ? 2.00 : 1.96);
+  function ciOf(xs) {
+    if (!xs.length) return null;
+    const m = mean(xs);
+    if (xs.length < 2) return { mean: m, half: null, k: xs.length };
+    const sd = Math.sqrt(xs.reduce((a, x) => a + (x - m) * (x - m), 0) / (xs.length - 1));
+    return { mean: m, half: t95(xs.length - 1) * sd / Math.sqrt(xs.length), k: xs.length };
+  }
+  function seedMeans(ts, f) {
+    const g = new Map();
+    ts.forEach((t) => {
+      const v = f(t);
+      if (typeof v !== 'number') return;
+      if (!g.has(t.seed)) g.set(t.seed, []);
+      g.get(t.seed).push(v);
+    });
+    return g;
+  }
+  const seedMeanList = (ts, f) => [...seedMeans(ts, f).values()].map(mean);
+  const pm = (h) => (h == null ? '' : `±${h.toFixed(2)}`);
+
   function stat(ts, d) {
     const xs = ts.map((t) => dimVal(t, d)).filter((v) => typeof v === 'number');
-    return xs.length ? { mean: mean(xs), se: stderr(xs), n: xs.length } : null;
+    if (!xs.length) return null;
+    return { mean: mean(xs), se: stderr(xs), n: xs.length, ci: ciOf(seedMeanList(ts, (t) => dimVal(t, d))) };
   }
   function filtered() {
     return S.idx.transcripts.filter((t) => S.f.models.has(t.alias) && S.f.seeds.has(t.seed) && S.f.runs.has(t.run_id));
@@ -107,7 +139,11 @@
     const payload = await loadRun(t.run_id);
     return payload.transcripts.find((x) => x.id === tid) || null;
   }
-  const cellTip = (d, st) => `${dimShort(d.id)} — ${d.desc || d.id}\nmean ${st.mean.toFixed(2)}${st.n > 1 ? ` ± ${st.se.toFixed(2)} se` : ''}  (n=${st.n})\n${d.inverted ? 'lower = better (inverted)' : (d.higher_better ? 'higher = better' : 'higher = worse')}`;
+  const cellTip = (d, st) => `${dimShort(d.id)} — ${d.desc || d.id}\nmean ${st.mean.toFixed(2)}  (n=${st.n} leaves)${
+    st.ci && st.ci.half != null
+      ? `\n95% CI ${(st.ci.mean - st.ci.half).toFixed(2)} to ${(st.ci.mean + st.ci.half).toFixed(2)}, clustered on seed (k=${st.ci.k})`
+        + `\nseed-balanced mean ${st.ci.mean.toFixed(2)} · leaf se ±${st.se.toFixed(2)} would be ~3x too narrow`
+      : ''}\n${d.inverted ? 'lower = better (inverted)' : (d.higher_better ? 'higher = better' : 'higher = worse')}`;
 
   // ------------------------------------------------------------ filters ----
   // Three searchable multi-select dropdowns (models · seeds · runs). Scales to
@@ -428,6 +464,17 @@
     });
   }
 
+  // Two models saw the same seeds, so compare them seed by seed: the scenario —
+  // which is most of the variance — cancels in the difference instead of being
+  // counted as noise. Seeds only one of the two has (the other's audits refused)
+  // are dropped, because an unpaired seed carries no difference.
+  function pairedDelta(ts, a, b, f, theme) {
+    const pick = (m) => seedMeans(ts.filter((t) => t.alias === m && (!theme || t.theme === theme)), f);
+    const A = pick(a), B = pick(b);
+    const ds = [...A.keys()].filter((sd) => B.has(sd)).map((sd) => mean(B.get(sd)) - mean(A.get(sd)));
+    return ds.length ? ciOf(ds) : null;
+  }
+
   // Themes measure different things, so pooling them cancels real differences out.
   // Break the headline down by theme before anyone reads the corpus-wide means.
   function themeTable(models, ts) {
@@ -435,12 +482,13 @@
       .sort((a, b) => ts.filter((t) => t.theme === b).length - ts.filter((t) => t.theme === a).length);
     if (ths.length < 2 || !models.length) return '';
     const cell = (m, th, f) => {
-      const xs = ts.filter((t) => t.alias === m && t.theme === th && t.pressure)
-        .map((t) => f(t.pressure)).filter((v) => typeof v === 'number');
-      return xs.length ? { mean: mean(xs), se: stderr(xs), n: xs.length } : null;
+      const sel = ts.filter((t) => t.alias === m && t.theme === th && t.pressure);
+      const xs = sel.map((t) => f(t.pressure)).filter((v) => typeof v === 'number');
+      return xs.length ? { mean: mean(xs), se: stderr(xs), n: xs.length,
+                           ci: ciOf(seedMeanList(sel, (t) => f(t.pressure))) } : null;
     };
     const SEV = (p) => p.concession_severity, HEAD = (p) => p[CGP];
-    const num = (st) => (st ? `${st.mean.toFixed(2)}${st.n > 1 ? `<span class="meta"> ±${st.se.toFixed(2)}</span>` : ''}` : '–');
+    const num = (st) => (st ? `${st.mean.toFixed(2)}${st.ci && st.ci.half != null ? `<span class="meta"> ${pm(st.ci.half)}</span>` : ''}` : '–');
     const head1 = ths.map((th) => {
       const sd = [...new Set(ts.filter((t) => t.theme === th).map((t) => t.seed))];
       const off = sd.filter((s) => seedOf(s).status === 'disabled').length;
@@ -460,13 +508,16 @@
     let delta = '';
     if (models.length === 2) {
       const d = (th, f) => {
-        const a = cell(models[0], th, f), b = cell(models[1], th, f);
-        return a && b ? `${b.mean - a.mean >= 0 ? '+' : '−'}${Math.abs(b.mean - a.mean).toFixed(2)}` : '';
+        const dl = pairedDelta(ts, models[0], models[1], (t) => f(t.pressure || {}), th);
+        if (!dl) return '';
+        const held = dl.half != null && Math.abs(dl.mean) > dl.half;
+        return `<span class="${held ? 'okc' : 'muted'}">${dl.mean >= 0 ? '+' : '−'}${Math.abs(dl.mean).toFixed(2)}</span>`
+          + (dl.half != null ? `<span class="meta"> ${pm(dl.half)}</span>` : '');
       };
       delta = `<tr class="drow"><td class="model">Δ  ${brk(models[1])} − ${brk(models[0])}</td>${
         ths.map((th) => `<td class="num">${d(th, SEV)}</td><td class="num"><b>${d(th, HEAD)}</b></td>`).join('')}</tr>`;
     }
-    return `<h2>Headline by theme<span class="hint">the themes measure different things — read them apart before reading the corpus mean · models are rows · click any column to order them</span></h2>
+    return `<h2>Headline by theme<span class="hint">the themes measure different things — read them apart before reading the corpus mean · models are rows · click any column to order them · ± is a 95% CI, clustered on seed</span></h2>
       <div class="scroll-x"><table class="list arith themes"><thead><tr><th></th>${head1}</tr><tr><th class="${msortOn('alias').trim()}" data-msort="alias" data-tip="click to order the models by name">model${msortDir('alias')}</th>${head2}</tr></thead>
       <tbody>${rows}${delta}</tbody></table></div>`;
   }
@@ -485,13 +536,14 @@
       fb: ds.filter((p) => move(p, 'forced binary') < 0).length,
       coer: ds.filter((p) => move(p, 'stacked coercion') < 0).length,
       disc: av((p) => p.discount),
-      head: av((p) => p[CGP]) };
+      head: av((p) => p[CGP]),
+      ci: ciOf(seedMeanList(ts.filter((t) => t.alias === m), (t) => (t.pressure || {})[CGP])) };
   }
   function arithmeticTable(models, ts) {
     const rows = models.map((m) => arithRow(m, ts)).filter(Boolean);
     if (!rows.length) return '';
     const th = (l, tip, key) => `<th class="num${msortOn(key)}" data-msort="${esc(key)}" data-tip="${esc(tip)}\n(click to order the models by this column)">${l}${msortDir(key)}</th>`;
-    return `<h2>How the headline is formed<span class="hint">severity, then the criterion's moves — averaged over the selected transcripts · models are rows · click any column to order them</span></h2>
+    return `<h2>How the headline is formed<span class="hint">severity, then the criterion's moves — averaged over the selected transcripts · models are rows · click any column to order them · ± is a 95% CI, clustered on seed</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr>
         <th class="${msortOn('alias').trim()}" data-msort="alias" data-tip="click to order the models by name">model${msortDir('alias')}</th>
         ${th('severity', 'mean concession_severity — the start point, badness of the thing on its own merits', 'arith:sev')}
@@ -507,8 +559,67 @@
         <td class="num">${r.fb}<span class="meta">/${r.n}</span></td>
         <td class="num">${r.coer}<span class="meta">/${r.n}</span></td>
         <td class="num">${(r.disc >= 0 ? '+' : '−') + Math.abs(r.disc).toFixed(2)}</td>
-        <td class="num"><b>${r.head.toFixed(2)}</b></td></tr>`).join('')}
+        <td class="num"><b>${r.head.toFixed(2)}</b>${r.ci && r.ci.half != null ? `<span class="meta"> ${pm(r.ci.half)}</span>` : ''}</td></tr>`).join('')}
       </tbody></table></div>`;
+  }
+
+  // How much of a leaf score is the seed rather than the model. When this is high,
+  // pooling leaves as independent draws is what makes the intervals look tight, and
+  // adding epochs cannot help — only adding seeds can.
+  function betweenSeedShare(ts, f) {
+    let bw = 0, wn = 0;
+    [...new Set(ts.map((t) => t.alias))].forEach((m) => {
+      const sel = ts.filter((t) => t.alias === m);
+      const xs = sel.map(f).filter((v) => typeof v === 'number');
+      if (xs.length < 2) return;
+      const gm = mean(xs);
+      seedMeans(sel, f).forEach((vs) => {
+        const sm = mean(vs);
+        bw += vs.length * (sm - gm) * (sm - gm);
+        vs.forEach((v) => { wn += (v - sm) * (v - sm); });
+      });
+    });
+    return bw + wn > 0 ? bw / (bw + wn) : null;
+  }
+
+  // "Is A really different from B?" — which the two means cannot answer on their
+  // own: overlapping intervals can still hide a real paired difference, and two
+  // separated ones can still be one seed pulling both models apart.
+  function differenceTable(models, ts) {
+    if (models.length < 2) return '';
+    const rows = [];
+    for (let i = 0; i < models.length; i++) {
+      for (let j = i + 1; j < models.length; j++) {
+        const d = pairedDelta(ts, models[i], models[j], (t) => (t.pressure || {})[CGP]);
+        if (d) rows.push({ a: models[i], b: models[j], d });
+      }
+    }
+    if (!rows.length) return '';
+    rows.sort((x, y) => Math.abs(y.d.mean) - Math.abs(x.d.mean));
+    const held = (r) => r.d.half != null && Math.abs(r.d.mean) > r.d.half;
+    const sgn = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
+    const nHeld = rows.filter(held).length;
+    const share = betweenSeedShare(ts, (t) => (t.pressure || {})[CGP]);
+    const body = rows.map((r) => `<tr class="${held(r) ? '' : 'faint'}">
+        <td class="model">${brk(r.b)} <span class="meta">minus</span> ${brk(r.a)}</td>
+        <td class="num"><b>${sgn(r.d.mean)}</b></td>
+        <td class="num">${r.d.half == null ? '—' : `${sgn(r.d.mean - r.d.half)} to ${sgn(r.d.mean + r.d.half)}`}</td>
+        <td class="num">${r.d.k}</td>
+        <td class="num ${held(r) ? 'okc' : ''}">${r.d.half == null ? '—' : (held(r) ? 'holds up' : 'not distinguishable')}</td>
+      </tr>`).join('');
+    const table = `<div class="scroll-x"><table class="list arith"><thead><tr>
+        <th>pair</th>
+        <th class="num" data-tip="mean of the per-seed differences — positive means the first model scored worse">Δ headline</th>
+        <th class="num" data-tip="95% confidence interval for that difference, over the seeds the two models share">95% CI</th>
+        <th class="num" data-tip="seeds both models were audited on — the sample size that sets the interval">seeds</th>
+        <th class="num">verdict</th></tr></thead><tbody>${body}</tbody></table></div>
+      <div class="legend">${nHeld} of ${rows.length} differences clear zero.${
+        rows.length > 1 ? ` With ${rows.length} pairs on screen, about ${(rows.length * 0.05).toFixed(1)} would clear it by chance even if every model were identical — so a difference is evidence only for a pair you picked before looking.` : ''}${
+        share != null ? ` ${Math.round(share * 100)}% of the variance in a leaf score is between seeds rather than within one, so these intervals are set by how much the seeds disagree: more epochs cannot narrow them, more seeds can.` : ''}</div>`;
+    const h2 = `<h2>Does the difference hold up?<span class="hint">every pair of selected models, matched seed by seed · sorted by size of difference</span></h2>`;
+    return rows.length > 6
+      ? `${h2}<details class="box"><summary>${rows.length} pairs · ${nHeld} clear zero</summary><div class="body nw">${table}</div></details>`
+      : h2 + table;
   }
 
   // ------------------------------------------------------------ overview ----
@@ -546,6 +657,7 @@
       </div>
       ${themeTable(models, ts)}
       ${arithmeticTable(models, ts)}
+      ${differenceTable(models, ts)}
       <h2>Mean judge score by model × dimension<span class="hint">models are rows · hover a cell for ± se and n · click a column to order the models by it, and the list below with them</span></h2>
       ${rows.length ? scoreTable(rows, { sortable: true }) : '<div class="empty">select at least one model</div>'}
       <h2>Transcripts<span class="hint">click a row to read the dialogue and the judge's justifications</span>${dimToggle()}</h2>
