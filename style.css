@@ -389,6 +389,8 @@ table.themes tr.drow td.model { font-weight: 500; }
 table.list tr.faint td { color: var(--muted); }
 table.list tr.faint td.model { color: var(--ink-2); }
 details.box .body.nw { white-space: normal; }
+/* marks a column whose interval rests on too few shared seeds to trust */
+table.list .meta.thin { color: var(--warn, #9a6700); font-weight: 600; margin-left: 2px; }
 .status.validated { background: #1a7f37; color: #fff; }
 .valbox {
   margin: 6px 0; padding: 7px 9px; border-left: 3px solid var(--ok, #1a7f37);

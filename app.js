@@ -584,41 +584,60 @@
 
   // "Is A really different from B?" — which the two means cannot answer on their
   // own: overlapping intervals can still hide a real paired difference, and two
-  // separated ones can still be one seed pulling both models apart.
+  // separated ones can still be one seed pulling both models apart. Split by theme,
+  // because the themes measure different things and a difference that is real in one
+  // can be absent in the other — pooling them averages that away.
   function differenceTable(models, ts) {
     if (models.length < 2) return '';
+    const f = (t) => (t.pressure || {})[CGP];
+    const ths = [...new Set(ts.map((t) => t.theme).filter(Boolean))]
+      .sort((a, b) => ts.filter((t) => t.theme === b).length - ts.filter((t) => t.theme === a).length);
+    const cols = [{ id: null, label: 'all seeds', tip: 'every selected seed, pooled' }]
+      .concat(ths.map((th) => ({ id: th, label: themeTitle(th), tip: `${themeTitle(th)} seeds only` })));
     const rows = [];
     for (let i = 0; i < models.length; i++) {
       for (let j = i + 1; j < models.length; j++) {
-        const d = pairedDelta(ts, models[i], models[j], (t) => (t.pressure || {})[CGP]);
-        if (d) rows.push({ a: models[i], b: models[j], d });
+        const cells = cols.map((c) => pairedDelta(ts, models[i], models[j], f, c.id));
+        if (cells[0]) rows.push({ a: models[i], b: models[j], cells });
       }
     }
     if (!rows.length) return '';
-    rows.sort((x, y) => Math.abs(y.d.mean) - Math.abs(x.d.mean));
-    const held = (r) => r.d.half != null && Math.abs(r.d.mean) > r.d.half;
+    rows.sort((x, y) => Math.abs(y.cells[0].mean) - Math.abs(x.cells[0].mean));
+    const held = (d) => d && d.half != null && Math.abs(d.mean) > d.half;
     const sgn = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
-    const nHeld = rows.filter(held).length;
-    const share = betweenSeedShare(ts, (t) => (t.pressure || {})[CGP]);
-    const body = rows.map((r) => `<tr class="${held(r) ? '' : 'faint'}">
-        <td class="model">${brk(r.b)} <span class="meta">minus</span> ${brk(r.a)}</td>
-        <td class="num"><b>${sgn(r.d.mean)}</b></td>
-        <td class="num">${r.d.half == null ? '—' : `${sgn(r.d.mean - r.d.half)} to ${sgn(r.d.mean + r.d.half)}`}</td>
-        <td class="num">${r.d.k}</td>
-        <td class="num ${held(r) ? 'okc' : ''}">${r.d.half == null ? '—' : (held(r) ? 'holds up' : 'not distinguishable')}</td>
+    // Under ~5 seeds the spread itself is estimated from too few points for the
+    // interval to mean much, even though the t quantile already widens for it.
+    const THIN = 5;
+    const cell = (d) => {
+      if (!d) return '<td class="num na">–</td>';
+      const thin = d.k < THIN;
+      const tip = d.half == null
+        ? `only ${d.k} shared seed — no interval`
+        : `95% CI ${sgn(d.mean - d.half)} to ${sgn(d.mean + d.half)}\n${d.k} seeds both models were audited on`
+          + (thin ? `\n⚠ ${d.k} seeds is too few for this interval to be worth much` : '');
+      return `<td class="num" data-tip="${esc(tip)}"><span class="${held(d) ? 'okc' : ''}">${sgn(d.mean)}</span>`
+        + `${d.half == null ? '' : `<span class="meta"> ${pm(d.half)}</span>`}${thin ? '<span class="meta thin">?</span>' : ''}</td>`;
+    };
+    const nHeld = rows.filter((r) => held(r.cells[0])).length;
+    const share = betweenSeedShare(ts, f);
+    const nThin = cols.filter((c, i) => rows.some((r) => r.cells[i] && r.cells[i].k < THIN)).length;
+    const head = `<tr><th>pair</th>${cols.map((c, ci) => {
+      const ks = [...new Set(rows.map((r) => r.cells[ci]).filter(Boolean).map((d) => d.k))].sort((x, y) => x - y);
+      const span = ks.length ? (ks[0] === ks[ks.length - 1] ? `${ks[0]} seeds` : `${ks[0]}–${ks[ks.length - 1]} seeds`) : '—';
+      return `<th class="num" data-tip="${esc(c.tip)}">${esc(c.label)}<span class="meta"> · ${span}</span></th>`;
+    }).join('')}</tr>`;
+    const body = rows.map((r) => `<tr class="${held(r.cells[0]) ? '' : 'faint'}">
+        <td class="model">${brk(r.b)} <span class="meta">minus</span> ${brk(r.a)}</td>${r.cells.map(cell).join('')}
       </tr>`).join('');
-    const table = `<div class="scroll-x"><table class="list arith"><thead><tr>
-        <th>pair</th>
-        <th class="num" data-tip="mean of the per-seed differences — positive means the first model scored worse">Δ headline</th>
-        <th class="num" data-tip="95% confidence interval for that difference, over the seeds the two models share">95% CI</th>
-        <th class="num" data-tip="seeds both models were audited on — the sample size that sets the interval">seeds</th>
-        <th class="num">verdict</th></tr></thead><tbody>${body}</tbody></table></div>
-      <div class="legend">${nHeld} of ${rows.length} differences clear zero.${
-        rows.length > 1 ? ` With ${rows.length} pairs on screen, about ${(rows.length * 0.05).toFixed(1)} would clear it by chance even if every model were identical — so a difference is evidence only for a pair you picked before looking.` : ''}${
+    const table = `<div class="scroll-x"><table class="list arith"><thead>${head}</thead><tbody>${body}</tbody></table></div>
+      <div class="legend">Δ is the mean of the per-seed differences, ± its 95% CI; green means the interval clears zero.
+        ${nHeld} of ${rows.length} clear it on all seeds.${
+        rows.length > 1 ? ` With ${rows.length} pairs on screen, about ${(rows.length * 0.05).toFixed(1)} would clear zero by chance even if every model were identical — so a difference is evidence only for a pair you picked before looking.` : ''}${
+        nThin ? ' A <b>?</b> marks a column with too few shared seeds for its interval to be worth much.' : ''}${
         share != null ? ` ${Math.round(share * 100)}% of the variance in a leaf score is between seeds rather than within one, so these intervals are set by how much the seeds disagree: more epochs cannot narrow them, more seeds can.` : ''}</div>`;
-    const h2 = `<h2>Does the difference hold up?<span class="hint">every pair of selected models, matched seed by seed · sorted by size of difference</span></h2>`;
+    const h2 = `<h2>Does the difference hold up?<span class="hint">every pair of selected models, matched seed by seed · by theme, because they can disagree</span></h2>`;
     return rows.length > 6
-      ? `${h2}<details class="box"><summary>${rows.length} pairs · ${nHeld} clear zero</summary><div class="body nw">${table}</div></details>`
+      ? `${h2}<details class="box"><summary>${rows.length} pairs · ${nHeld} clear zero on all seeds</summary><div class="body nw">${table}</div></details>`
       : h2 + table;
   }
 
