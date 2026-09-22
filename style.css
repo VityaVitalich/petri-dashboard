@@ -173,6 +173,9 @@ table.scores th.row, table.scores td.row {
   position: sticky; left: 0; background: var(--bg); z-index: 1; font-size: 13px;
 }
 table.scores td.row.link { cursor: pointer; }
+/* the heatmap's corner cell doubles as the "order by name" header */
+table.scores th.row.hd { cursor: pointer; color: var(--muted); font-size: 11.5px; font-weight: 500; vertical-align: bottom; padding-bottom: 4px; user-select: none; }
+table.scores th.row.hd:hover, table.scores th.row.hd.sorted { color: var(--ink); }
 table.scores td.row.link:hover { color: var(--link); }
 table.scores td.row .meta { color: var(--muted); font-weight: 400; font-size: 11.5px; margin-left: 6px; }
 table.scores td.q, table.scores td.na {
