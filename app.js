@@ -149,6 +149,29 @@
              p: tPval(t, xs.length - 1) };
   }
 
+  // The only randomisation this paired design has is which of the two models is
+  // called "first" within a seed. Flipping the sign of each seed's difference
+  // enumerates every outcome consistent with the two models being identical, so
+  // the resulting p assumes nothing about the shape of the differences — unlike
+  // the t-test, which assumes they are roughly symmetric and cannot be checked at
+  // this many seeds. The cost is discreteness: with k seeds there are 2^k
+  // outcomes, so no result can come in under 2/2^k however large the effect.
+  const FLIP_MAX = 16;
+  function signFlipP(ds) {
+    const k = ds.length;
+    if (!k || k > FLIP_MAX) return null;
+    const obs = Math.abs(ds.reduce((a, b) => a + b, 0)) - 1e-12;
+    const N = 1 << k;
+    let hits = 0;
+    for (let m = 0; m < N; m++) {
+      let sum = 0;
+      for (let i = 0; i < k; i++) sum += (m >> i) & 1 ? -ds[i] : ds[i];
+      if (Math.abs(sum) >= obs) hits++;
+    }
+    return hits / N;
+  }
+  const flipFloor = (k) => (k > FLIP_MAX ? null : 2 / Math.pow(2, k));
+
   // Holm step-down: same family-wise error guarantee as Bonferroni, never weaker.
   // Comparing k models pairwise is k(k-1)/2 tests at once, and at 5% each you get
   // a false winner roughly every twenty rows.
@@ -532,7 +555,10 @@
     const pick = (m) => seedMeans(ts.filter((t) => t.alias === m && (!theme || t.theme === theme)), f);
     const A = pick(a), B = pick(b);
     const ds = [...A.keys()].filter((sd) => B.has(sd)).map((sd) => mean(B.get(sd)) - mean(A.get(sd)));
-    return ds.length ? ciOf(ds) : null;
+    if (!ds.length) return null;
+    const r = ciOf(ds);
+    r.ds = ds;   // the exact test re-uses them; too costly to carry through stat()
+    return r;
   }
 
   // Themes measure different things, so pooling them cancels real differences out.
@@ -710,7 +736,8 @@
   // difference look real when it is not.
   function renderStats(query) {
     const ts = filtered();
-    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '', corr: query.get('corr') || 'holm' };
+    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '',
+                 corr: query.get('corr') || 'holm', test: query.get('test') || 't' };
     const d = dimById(st.dim);
     const f = (t) => dimVal(t, d);
     const ths = [...new Set(ts.map((t) => t.theme).filter(Boolean))]
@@ -723,6 +750,8 @@
     const controls = `<div class="ctls">
       ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to test')}
       ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope, 'restrict to one theme — they measure different things')}
+      ${sel('test', 'test', [{ v: 't', l: 'paired t' }, { v: 'flip', l: 'exact sign-flip' }], st.test,
+            'paired t uses the size of each difference and assumes they are roughly symmetric; the sign-flip test assumes nothing but can only return multiples of 1/2^seeds')}
       ${sel('corr', 'correction', [{ v: 'holm', l: 'Holm' }, { v: 'bonf', l: 'Bonferroni' }, { v: 'none', l: 'none (raw p)' }], st.corr, 'how to account for testing many pairs at once')}
     </div>`;
 
@@ -738,9 +767,10 @@
         if (r) rows.push({ a: models[i], b: models[j], r });
       }
     }
-    const adj = adjust(rows.map((x) => x.r.p), st.corr);
+    rows.forEach((x) => { x.flip = signFlipP(x.r.ds); x.p = st.test === 'flip' ? x.flip : x.r.p; });
+    const adj = adjust(rows.map((x) => x.p), st.corr);
     rows.forEach((x, i) => { x.adj = adj[i]; });
-    rows.sort((x, y) => (x.r.p == null ? 2 : x.r.p) - (y.r.p == null ? 2 : y.r.p));
+    rows.sort((x, y) => (x.p == null ? 2 : x.p) - (y.p == null ? 2 : y.p) || x.r.p - y.r.p);
 
     const sgn = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
     const pf = (v) => (v == null ? '—' : v < 0.001 ? '<0.001' : v.toFixed(3));
@@ -758,7 +788,11 @@
       <td class="num">${x.r.half == null ? '—' : `${sgn(x.r.mean - x.r.half)} to ${sgn(x.r.mean + x.r.half)}`}</td>
       <td class="num">${x.r.t == null || !isFinite(x.r.t) ? '—' : x.r.t.toFixed(2)}</td>
       <td class="num">${x.r.df}</td>
-      <td class="num">${pf(x.r.p)}</td>
+      <td class="num${st.test === 't' ? '' : ' meta'}">${pf(x.r.p)}</td>
+      <td class="num${st.test === 'flip' ? '' : ' meta'}" data-tip="${esc(x.flip != null && x.flip <= flipFloor(x.r.k) + 1e-12
+        ? `this is the floor: with ${x.r.k} seeds no sign-flip result can come in under ${flipFloor(x.r.k).toFixed(3)}, so the test is saturated and the effect may be larger than the p suggests`
+        : `exact, over all ${Math.pow(2, x.r.k)} sign assignments of ${x.r.k} seeds`)}">${pf(x.flip)}${
+        x.flip != null && x.flip <= flipFloor(x.r.k) + 1e-12 ? '<span class="meta thin">floor</span>' : ''}</td>
       <td class="num">${st.corr === 'none' ? '—' : pf(x.adj)}</td>
       <td class="${win(x) ? 'okc' : ''}">${win(x) ? `${brk(worse(x))} is worse` : 'no difference shown'}</td>
     </tr>`).join('');
@@ -778,12 +812,13 @@
         ${th('95% CI', 'confidence interval for that mean')}
         ${th('t', 'the difference divided by its standard error')}
         ${th('df', 'seeds minus one')}
-        ${th('p', 'two-sided paired t-test of the per-seed differences against zero')}
-        ${th('p adj', 'the same p after accounting for all pairs tested here')}
+        ${th('p (t)', 'two-sided paired t-test of the per-seed differences against zero')}
+        ${th('p (flip)', 'exact sign-flip test — assumes nothing about the shape of the differences, but can only return multiples of 1/2^seeds')}
+        ${th('p adj', `the ${st.test === 'flip' ? 'sign-flip' : 't'} p after accounting for all pairs tested here`)}
         <th>verdict</th></tr></thead><tbody>${body}</tbody></table></div>
-      <div class="legend">Paired t-test on per-seed differences: within each seed both models are averaged over their epochs, and the test runs on those ${rows.length ? rows[0].r.k : 0}-or-so numbers.${
+      <div class="legend">Both tests run on per-seed differences: within each seed both models are averaged over their epochs, and the test runs on those ${rows.length ? rows[0].r.k : 0}-or-so numbers. The <b>${st.test === 'flip' ? 'sign-flip' : 't'}</b> column drives the verdict; the other is there as a check, and a wide gap between them is a reason to trust the sign-flip.${
         thin ? ` <b>?</b> marks ${thin} pair${thin > 1 ? 's' : ''} resting on fewer than 5 shared seeds, where the interval is too unstable to lean on.` : ''} A seed only one model was audited on is dropped — a refused audit leaves no difference to measure.</div>
-      <details class="box"><summary>What this test assumes, and what it cannot tell you</summary><div class="body">Each seed contributes one difference, and those differences are treated as independent draws from one distribution — reasonable, since seeds were written separately, but with under ten of them normality is an assumption rather than something the data can check. A p-value answers "how surprising is a difference this large if the two models were identical", not "how big is the difference" — read the Δ and its interval for that. Non-significant never means equal: at this sample size a real half-point gap would go undetected most of the time. And with ${rows.length} pairs on screen the correction is doing real work — turn it off only for a pair you chose before looking.</div></details>`;
+      <details class="box"><summary>What this test assumes, and what it cannot tell you</summary><div class="body">Each seed contributes one difference, and those differences are treated as independent draws from one distribution — reasonable, since seeds were written separately. The <b>seed</b> is the unit because both models were given the same seeds, while the epochs inside one are re-runs of a single scenario; testing at the leaf level instead treats those re-runs as fresh evidence and shrinks p by more than tenfold. Analysing leaves is fine if the standard error is clustered on seed, but that lands back on these same numbers, and under ten clusters is exactly where cluster-robust errors are least trustworthy. On the two tests: the paired t uses how big each difference is and assumes the differences are roughly symmetric, which under ten seeds cannot be checked; the sign-flip test assumes nothing but is discrete, so at ${rows.length ? rows[0].r.k : 6} seeds nothing can come in under ${rows.length && flipFloor(rows[0].r.k) != null ? flipFloor(rows[0].r.k).toFixed(3) : '—'} however large the effect — a rank test such as Wilcoxon has the same floor and additionally throws the sizes away. A p-value answers "how surprising is a difference this large if the two models were identical", not "how big is the difference" — read the Δ and its interval for that. Non-significant never means equal: at this sample size a real half-point gap would go undetected most of the time. And with ${rows.length} pairs on screen the correction is doing real work — turn it off only for a pair you chose before looking.</div></details>`;
   }
 
   // ------------------------------------------------------------ overview ----
@@ -1369,7 +1404,7 @@
     if (stSel) {
       const cur = new URLSearchParams(location.hash.split('?')[1] || '');
       const q = new URLSearchParams();
-      ['dim', 'scope', 'corr'].forEach((k) => {
+      ['dim', 'scope', 'corr', 'test'].forEach((k) => {
         const v = k === stSel.dataset.st ? stSel.value : (cur.get(k) || '');
         if (v) q.set(k, v);
       });
