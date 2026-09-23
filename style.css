@@ -394,6 +394,12 @@ table.list .meta.thin { color: var(--warn, #9a6700); font-weight: 600; margin-le
 /* stats-tab controls */
 .ctls { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
 .ctls .ctl { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+/* per-seed forest: one row per seed, zero fixed at the centre */
+td.forest { position: relative; width: 240px; min-width: 240px; max-width: 240px; height: 22px; padding: 0; }
+td.forest .zero { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ink-2); opacity: .45; }
+td.forest .bar { position: absolute; top: 9px; height: 2px; background: var(--muted); opacity: .55; border-radius: 1px; }
+td.forest .dot { position: absolute; top: 5px; width: 9px; height: 9px; margin-left: -4px; border-radius: 50%; background: var(--s1, #2563eb); }
+table.list tr.onrow > td { background: var(--surface); box-shadow: inset 2px 0 0 var(--s1, #2563eb); }
 .ctls .ctl select {
   font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
   border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; cursor: pointer;
