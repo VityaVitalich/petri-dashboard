@@ -391,6 +391,13 @@ table.list tr.faint td.model { color: var(--ink-2); }
 details.box .body.nw { white-space: normal; }
 /* marks a column whose interval rests on too few shared seeds to trust */
 table.list .meta.thin { color: var(--warn, #9a6700); font-weight: 600; margin-left: 2px; }
+/* stats-tab controls */
+.ctls { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.ctls .ctl { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.ctls .ctl select {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; cursor: pointer;
+}
 .status.validated { background: #1a7f37; color: #fff; }
 .valbox {
   margin: 6px 0; padding: 7px 9px; border-left: 3px solid var(--ok, #1a7f37);

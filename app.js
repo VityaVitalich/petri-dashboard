@@ -91,6 +91,47 @@
   // the unit of replication here is the seed — mean within a seed, then a t
   // interval over those seed means. `n` stays the leaf count (what was judged);
   // `ci.k` is the number that actually carries the uncertainty.
+  function lgamma(z) {
+    const G = [676.5203681218851, -1259.1392167224028, 771.32342877765313,
+               -176.61502916214059, 12.507343278686905, -0.13857109526572012,
+               9.9843695780195716e-6, 1.5056327351493116e-7];
+    if (z < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * z)) - lgamma(1 - z);
+    z -= 1;
+    let x = 0.99999999999980993;
+    for (let i = 0; i < G.length; i++) x += G[i] / (z + i + 1);
+    const t = z + G.length - 0.5;
+    return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+  }
+  function betacf(a, b, x) {
+    const TINY = 1e-300, EPS = 3e-14;
+    const qab = a + b, qap = a + 1, qam = a - 1;
+    let c = 1, d = 1 - qab * x / qap;
+    if (Math.abs(d) < TINY) d = TINY;
+    d = 1 / d;
+    let h = d;
+    for (let m = 1; m <= 300; m++) {
+      const m2 = 2 * m;
+      let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+      d = 1 + aa * d; if (Math.abs(d) < TINY) d = TINY;
+      c = 1 + aa / c; if (Math.abs(c) < TINY) c = TINY;
+      d = 1 / d; h *= d * c;
+      aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+      d = 1 + aa * d; if (Math.abs(d) < TINY) d = TINY;
+      c = 1 + aa / c; if (Math.abs(c) < TINY) c = TINY;
+      d = 1 / d;
+      const del = d * c; h *= del;
+      if (Math.abs(del - 1) < EPS) break;
+    }
+    return h;
+  }
+  function ibeta(a, b, x) {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    const bt = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log(1 - x));
+    return x < (a + 1) / (a + b + 2) ? bt * betacf(a, b, x) / a : 1 - bt * betacf(b, a, 1 - x) / b;
+  }
+  const tPval = (t, df) => (!isFinite(t) ? 0 : df < 1 ? null : ibeta(df / 2, 0.5, df / (df + t * t)));
+
   const T95 = [0, 12.71, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
                2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
                2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042];
@@ -100,7 +141,26 @@
     const m = mean(xs);
     if (xs.length < 2) return { mean: m, half: null, k: xs.length };
     const sd = Math.sqrt(xs.reduce((a, x) => a + (x - m) * (x - m), 0) / (xs.length - 1));
-    return { mean: m, half: t95(xs.length - 1) * sd / Math.sqrt(xs.length), k: xs.length };
+    const se = sd / Math.sqrt(xs.length);
+    // one-sample t against 0 — meaningful for a paired difference, which is the
+    // only thing the stats view runs it on
+    const t = se > 0 ? m / se : (m === 0 ? 0 : Infinity);
+    return { mean: m, half: t95(xs.length - 1) * se, k: xs.length, se, t, df: xs.length - 1,
+             p: tPval(t, xs.length - 1) };
+  }
+
+  // Holm step-down: same family-wise error guarantee as Bonferroni, never weaker.
+  // Comparing k models pairwise is k(k-1)/2 tests at once, and at 5% each you get
+  // a false winner roughly every twenty rows.
+  function adjust(ps, how) {
+    const out = ps.map(() => null);
+    if (how === 'none') return ps.slice();
+    const ix = ps.map((v, i) => [v, i]).filter(([v]) => typeof v === 'number').sort((a, b) => a[0] - b[0]);
+    const m = ix.length;
+    if (how === 'bonf') { ix.forEach(([v, i]) => { out[i] = Math.min(1, v * m); }); return out; }
+    let run = 0;
+    ix.forEach(([v, i], j) => { run = Math.max(run, Math.min(1, (m - j) * v)); out[i] = run; });
+    return out;
   }
   function seedMeans(ts, f) {
     const g = new Map();
@@ -641,6 +701,91 @@
       : h2 + table;
   }
 
+  // ---------------------------------------------------------------- stats ----
+  // Every pair of the selected models on one dimension, tested the way the design
+  // allows: the two models saw the same seeds, so the comparison is paired on the
+  // seeds they share and each seed contributes one number. That makes the seed —
+  // not the leaf — the unit, which is the whole point: epochs of one seed are
+  // re-runs of the same scenario, and counting them as independent is what makes a
+  // difference look real when it is not.
+  function renderStats(query) {
+    const ts = filtered();
+    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '', corr: query.get('corr') || 'holm' };
+    const d = dimById(st.dim);
+    const f = (t) => dimVal(t, d);
+    const ths = [...new Set(ts.map((t) => t.theme).filter(Boolean))]
+      .sort((a, b) => ts.filter((t) => t.theme === b).length - ts.filter((t) => t.theme === a).length);
+    const pool = st.scope ? ts.filter((t) => t.theme === st.scope) : ts;
+    const models = [...new Set(pool.map((t) => t.alias))].filter((m) => pool.some((t) => t.alias === m && typeof f(t) === 'number')).sort();
+
+    const sel = (key, label, opts, val, tip) => `<label class="ctl" data-tip="${esc(tip)}">${label}
+      <select data-st="${key}">${opts.map((o) => `<option value="${esc(o.v)}"${o.v === val ? ' selected' : ''}>${esc(o.l)}</option>`).join('')}</select></label>`;
+    const controls = `<div class="ctls">
+      ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to test')}
+      ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope, 'restrict to one theme — they measure different things')}
+      ${sel('corr', 'correction', [{ v: 'holm', l: 'Holm' }, { v: 'bonf', l: 'Bonferroni' }, { v: 'none', l: 'none (raw p)' }], st.corr, 'how to account for testing many pairs at once')}
+    </div>`;
+
+    if (models.length < 2) {
+      return void ($('#view').innerHTML = controls
+        + `<div class="empty">Select at least two models in the filter bar above${st.scope ? ' that have scored audits in this theme' : ''}.</div>`);
+    }
+
+    const rows = [];
+    for (let i = 0; i < models.length; i++) {
+      for (let j = i + 1; j < models.length; j++) {
+        const r = pairedDelta(pool, models[i], models[j], f);
+        if (r) rows.push({ a: models[i], b: models[j], r });
+      }
+    }
+    const adj = adjust(rows.map((x) => x.r.p), st.corr);
+    rows.forEach((x, i) => { x.adj = adj[i]; });
+    rows.sort((x, y) => (x.r.p == null ? 2 : x.r.p) - (y.r.p == null ? 2 : y.r.p));
+
+    const sgn = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
+    const pf = (v) => (v == null ? '—' : v < 0.001 ? '<0.001' : v.toFixed(3));
+    const win = (x) => (x.adj != null && x.adj < 0.05);
+    const nWin = rows.filter(win).length;
+    const thin = rows.filter((x) => x.r.k < 5).length;
+
+    // which end of this dimension is the good one, so a sign reads as a verdict
+    const worse = (x) => (d.higher_better ? (x.r.mean < 0 ? x.b : x.a) : (x.r.mean > 0 ? x.b : x.a));
+
+    const body = rows.map((x) => `<tr class="${win(x) ? '' : 'faint'}">
+      <td class="model">${brk(x.b)} <span class="meta">minus</span> ${brk(x.a)}</td>
+      <td class="num">${x.r.k}${x.r.k < 5 ? '<span class="meta thin">?</span>' : ''}</td>
+      <td class="num"><b>${sgn(x.r.mean)}</b></td>
+      <td class="num">${x.r.half == null ? '—' : `${sgn(x.r.mean - x.r.half)} to ${sgn(x.r.mean + x.r.half)}`}</td>
+      <td class="num">${x.r.t == null || !isFinite(x.r.t) ? '—' : x.r.t.toFixed(2)}</td>
+      <td class="num">${x.r.df}</td>
+      <td class="num">${pf(x.r.p)}</td>
+      <td class="num">${st.corr === 'none' ? '—' : pf(x.adj)}</td>
+      <td class="${win(x) ? 'okc' : ''}">${win(x) ? `${brk(worse(x))} is worse` : 'no difference shown'}</td>
+    </tr>`).join('');
+
+    const th = (l, tip) => `<th class="num" data-tip="${esc(tip)}">${l}</th>`;
+    $('#view').innerHTML = `${controls}
+      <div class="tiles">
+        <div class="tile"><div class="k">pairs tested</div><div class="v">${rows.length}</div><div class="d">${models.length} models${st.scope ? ` · ${esc(themeTitle(st.scope))} only` : ''}</div></div>
+        <div class="tile"><div class="k">differences found</div><div class="v">${nWin}</div><div class="d">${st.corr === 'none' ? 'raw p < 0.05, uncorrected' : `${st.corr === 'holm' ? 'Holm' : 'Bonferroni'}-adjusted p &lt; 0.05`}</div></div>
+        <div class="tile"><div class="k">dimension</div><div class="v" style="font-size:18px">${esc(dimShort(d.id))}</div><div class="d">${dirLabel(d)}</div></div>
+        <div class="tile"><div class="k">false winners expected</div><div class="v">${(rows.length * 0.05).toFixed(1)}</div><div class="d">at raw p &lt; 0.05, if no model differed</div></div>
+      </div>
+      <h2>Paired comparison<span class="hint">one row per pair · sorted by p · matched on the seeds both models were audited on</span></h2>
+      <div class="scroll-x"><table class="list arith"><thead><tr><th>pair</th>
+        ${th('seeds', 'seeds both models were audited on — this is the sample size, not the leaf count')}
+        ${th('Δ', 'mean of the per-seed differences')}
+        ${th('95% CI', 'confidence interval for that mean')}
+        ${th('t', 'the difference divided by its standard error')}
+        ${th('df', 'seeds minus one')}
+        ${th('p', 'two-sided paired t-test of the per-seed differences against zero')}
+        ${th('p adj', 'the same p after accounting for all pairs tested here')}
+        <th>verdict</th></tr></thead><tbody>${body}</tbody></table></div>
+      <div class="legend">Paired t-test on per-seed differences: within each seed both models are averaged over their epochs, and the test runs on those ${rows.length ? rows[0].r.k : 0}-or-so numbers.${
+        thin ? ` <b>?</b> marks ${thin} pair${thin > 1 ? 's' : ''} resting on fewer than 5 shared seeds, where the interval is too unstable to lean on.` : ''} A seed only one model was audited on is dropped — a refused audit leaves no difference to measure.</div>
+      <details class="box"><summary>What this test assumes, and what it cannot tell you</summary><div class="body">Each seed contributes one difference, and those differences are treated as independent draws from one distribution — reasonable, since seeds were written separately, but with under ten of them normality is an assumption rather than something the data can check. A p-value answers "how surprising is a difference this large if the two models were identical", not "how big is the difference" — read the Δ and its interval for that. Non-significant never means equal: at this sample size a real half-point gap would go undetected most of the time. And with ${rows.length} pairs on screen the correction is doing real work — turn it off only for a pair you chose before looking.</div></details>`;
+  }
+
   // ------------------------------------------------------------ overview ----
   function renderOverview() {
     if (!S.idx.transcripts.length) {
@@ -1162,13 +1307,14 @@
     const parts = raw.split('/').map((p) => { try { return decodeURIComponent(p); } catch (e) { return p; } });
     const view = parts[0] || 'overview';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.view === (view === 't' ? 'transcripts' : view)));
-    $('#filters').hidden = !(view === 'overview' || view === 'transcripts');
+    $('#filters').hidden = !(view === 'overview' || view === 'transcripts' || view === 'stats');
     if (view !== 'seeds') SF = null;   // seeds-tab handlers go inert off the tab
     const p = Promise.resolve().then(() => {
       if (view === 'overview') return renderOverview();
       if (view === 'transcripts') return renderTranscripts();
       if (view === 't') return renderTranscript(parts[1]);
       if (view === 'compare') return renderCompare(parts.slice(1));
+      if (view === 'stats') return renderStats(query);
       if (view === 'seeds') return renderSeeds(parts.slice(1), query);
       if (view === 'rubric') return renderRubric(parts.slice(1));
       $('#view').innerHTML = `<div class="empty">unknown view <code>${esc(view)}</code></div>`;
@@ -1219,6 +1365,16 @@
   });
   document.addEventListener('change', (e) => {
     if (e.target.id === 'alldims') { S.allDims = e.target.checked; route(); }
+    const stSel = e.target.closest('select[data-st]');
+    if (stSel) {
+      const cur = new URLSearchParams(location.hash.split('?')[1] || '');
+      const q = new URLSearchParams();
+      ['dim', 'scope', 'corr'].forEach((k) => {
+        const v = k === stSel.dataset.st ? stSel.value : (cur.get(k) || '');
+        if (v) q.set(k, v);
+      });
+      location.hash = `#/stats${q.toString() ? `?${q}` : ''}`;
+    }
   });
 
   // tooltip
