@@ -395,6 +395,7 @@ table.list .meta.thin { color: var(--warn, #9a6700); font-weight: 600; margin-le
 .ctls { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
 .ctls .ctl { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 /* per-seed forest: one row per seed, zero fixed at the centre */
+.banner.plain { border-left-color: var(--axis); color: var(--ink-2); font-weight: 400; }
 td.forest { position: relative; width: 240px; min-width: 240px; max-width: 240px; height: 22px; padding: 0; }
 td.forest .zero { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ink-2); opacity: .45; }
 td.forest .bar { position: absolute; top: 9px; height: 2px; background: var(--muted); opacity: .55; border-radius: 1px; }

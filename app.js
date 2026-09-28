@@ -217,6 +217,20 @@
     return { mean: mu, se, k, df: k - 1, t, p: tPval(t, k - 1), half: t95(k - 1) * se, tau2 };
   }
 
+  // The simple one. Forget sizes: on how many seeds did this model come out worse?
+  // If the two were the same each seed is a coin flip, so the count is binomial and
+  // the p needs nothing estimated from the data — no variance, no normality, no
+  // weighting, and no single wild seed can move it. It costs power (it agrees with
+  // the paired t on 26 of 28 pairs here, missing two where one seed dissents but
+  // the rest are large), which makes it the strict reading rather than the loose one.
+  function signP(wins, k) {
+    if (!k) return null;
+    const w = Math.max(wins, k - wins);
+    let tail = 0, c = 1;                       // c = C(k, i), stepped down from i = k
+    for (let i = k; i >= w; i--) { tail += c; c = c * i / (k - i + 1); }
+    return Math.min(1, 2 * tail / Math.pow(2, k));
+  }
+
   // Holm step-down: same family-wise error guarantee as Bonferroni, never weaker.
   // Comparing k models pairwise is k(k-1)/2 tests at once, and at 5% each you get
   // a false winner roughly every twenty rows.
@@ -823,7 +837,10 @@
       x.flip = signFlipP(x.series.map((y) => y.d));
       x.p = st.test === 'flip' ? x.flip : x.r.p;
       const sgn0 = Math.sign(x.r.mean) || 1;
-      x.agree = x.series.filter((y) => Math.sign(y.d) === sgn0).length;
+      const nz = x.series.filter((y) => y.d !== 0);
+      x.agree = nz.filter((y) => Math.sign(y.d) === sgn0).length;
+      x.ties = x.series.length - nz.length;
+      x.signp = signP(x.agree, nz.length);
     });
     const adj = adjust(rows.map((x) => x.p), st.corr);
     rows.forEach((x, i) => { x.adj = adj[i]; });
@@ -842,10 +859,12 @@
     const body = rows.map((x) => `<tr class="clickable ${key(x) === st.pair ? 'onrow' : ''} ${win(x) ? '' : 'faint'}" data-pair="${esc(key(x))}">
       <td class="model">${brk(x.b)} <span class="meta">minus</span> ${brk(x.a)}</td>
       <td class="num">${x.k}${x.k < 5 ? '<span class="meta thin">?</span>' : ''}</td>
-      <td class="num" data-tip="${esc(`seeds whose own difference points the same way as the overall one`
+      <td class="num ${x.signp != null && x.signp < 0.05 ? 'okc' : ''}" data-tip="${esc(
+        `${x.agree} of ${x.k - x.ties} seeds came out the same way`
+        + `\nsign test p = ${x.signp == null ? '—' : x.signp.toFixed(3)} — treat each seed as a coin flip; nothing is estimated from the data`
         + (x.re ? `\nτ² = ${x.re.tau2.toFixed(2)} — how much the difference varies between scenarios beyond epoch noise`
                 + (x.re.tau2 === 0 ? '\nτ² = 0: the seeds agree to within epoch noise, the strongest agreement this design can show' : '') : ''))}">${
-        x.agree}/${x.k}${x.re && x.re.tau2 === 0 ? '<span class="okc"> ✓</span>' : ''}</td>
+        x.agree}/${x.k - x.ties}${x.re && x.re.tau2 === 0 ? '<span class="okc"> ✓</span>' : ''}</td>
       <td class="num"><b>${sgn(x.r.mean)}</b></td>
       <td class="num">${x.r.half == null ? '—' : `${sgn(x.r.mean - x.r.half)} to ${sgn(x.r.mean + x.r.half)}`}</td>
       <td class="num">${x.r.t == null || !isFinite(x.r.t) ? '—' : x.r.t.toFixed(2)}</td>
@@ -867,10 +886,13 @@
         <div class="tile"><div class="k">dimension</div><div class="v" style="font-size:18px">${esc(dimShort(d.id))}</div><div class="d">${dirLabel(d)}</div></div>
         <div class="tile"><div class="k">false winners expected</div><div class="v">${(rows.length * 0.05).toFixed(1)}</div><div class="d">at raw p &lt; 0.05, if no model differed</div></div>
       </div>
+      <div class="banner plain"><b>The short version:</b> read the <b>agree</b> column. If the two models were the same,
+        each seed is a coin flip, so ${rows.length && rows[0].k ? `at ${rows[0].k} seeds you need ${rows[0].k}/${rows[0].k} (p ${(signP(rows[0].k, rows[0].k) || 0).toFixed(3)})${rows[0].k >= 9 ? ` or ${rows[0].k - 1}/${rows[0].k} (p ${(signP(rows[0].k - 1, rows[0].k) || 0).toFixed(3)})` : ''}` : 'you need every seed'} to clear 5%.
+        That test assumes nothing and no single odd seed can move it. Everything to its right is the same question asked more precisely, using how big each difference was.</div>
       <h2>Paired comparison<span class="hint">one row per pair · sorted by p · matched on the seeds both models were audited on</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr><th>pair</th>
         ${th('seeds', 'seeds both models were audited on — this is the sample size, not the leaf count')}
-        ${th('agree', 'how many of those seeds point the same way · ✓ marks τ² = 0, no scenario-to-scenario variation beyond epoch noise')}
+        ${th('agree', 'how many of those seeds point the same way — the simple test, green when a coin would do this less than 5% of the time · ✓ marks τ² = 0, no scenario-to-scenario variation beyond epoch noise')}
         ${th('Δ', 'mean of the per-seed differences')}
         ${th('95% CI', 'confidence interval for that mean')}
         ${th('t', 'the difference divided by its standard error')}
