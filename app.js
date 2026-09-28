@@ -77,6 +77,8 @@
     const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/.exec(u || '');
     return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}Z` : (u || '');
   };
+  // long registry aliases do not fit a column head; keep the tail, which is what differs
+  const shortAlias = (a) => (a.length <= 18 ? a : '…' + a.slice(-17));
   const seedOf = (id) => S.idx.seeds[id] || { id, theme: null, status: 'unknown', body: '' };
   const themeTitle = (t) => (S.idx.themes[t] && S.idx.themes[t].title) || t || '—';
   // seed tiers, in promotion order: candidates -> active -> validated, or -> disabled
@@ -175,7 +177,8 @@
     const A = g(a), B = g(b);
     const series = [...A.keys()].filter((sd) => B.has(sd)).sort().map((sd) => {
       const xa = A.get(sd), xb = B.get(sd);
-      return { seed: sd, d: mean(xb) - mean(xa), nA: xa.length, nB: xb.length,
+      return { seed: sd, mA: mean(xa), mB: mean(xb), d: mean(xb) - mean(xa),
+               nA: xa.length, nB: xb.length,
                v: varOf(xa) / xa.length + varOf(xb) / xb.length };
     });
     const k = series.length;
@@ -683,99 +686,130 @@
   }
 
   // ---------------------------------------------------------------- stats ----
-  // Every pair of the selected models on one dimension. Each audit is a data point;
-  // the two models are compared inside each seed and averaged, so a model missing a
-  // seed cannot tip the result, and the error comes from the audits themselves.
+  // Two questions, two forms. Which model is better -> a ranking with intervals.
+  // Which differences are real -> a matrix, one cell per pair. Click a cell for the
+  // seed-by-seed breakdown behind it.
   function renderStats(query) {
     const ts = filtered();
     const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '', pair: query.get('pair') || '' };
     const d = dimById(st.dim);
     const f = (t) => dimVal(t, d);
+    const hiBetter = !!d.higher_better && !d.inverted;
     const ths = [...new Set(ts.map((t) => t.theme).filter(Boolean))]
       .sort((a, b) => ts.filter((t) => t.theme === b).length - ts.filter((t) => t.theme === a).length);
     const pool = st.scope ? ts.filter((t) => t.theme === st.scope) : ts;
-    const models = [...new Set(pool.map((t) => t.alias))]
-      .filter((m) => pool.some((t) => t.alias === m && typeof f(t) === 'number')).sort();
 
     const sel = (key, label, opts, val, tip) => `<label class="ctl" data-tip="${esc(tip)}">${label}
       <select data-st="${key}">${opts.map((o) => `<option value="${esc(o.v)}"${o.v === val ? ' selected' : ''}>${esc(o.l)}</option>`).join('')}</select></label>`;
     const controls = `<div class="ctls">
       ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to compare')}
       ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope,
-            'restrict to one theme — the themes measure different things, so an effect in one can be absent in the other')}
+            'restrict to one theme — the themes measure different things, so a difference in one can be absent in the other')}
     </div>`;
 
-    if (models.length < 2) {
+    // rank the models on this dimension, best first
+    const ms = [...new Set(pool.map((t) => t.alias))]
+      .map((m) => ({ m, s: ciOf(pool.filter((t) => t.alias === m).map(f).filter((v) => typeof v === 'number')) }))
+      .filter((x) => x.s);
+    ms.sort((a, b) => (hiBetter ? b.s.mean - a.s.mean : a.s.mean - b.s.mean));
+    if (ms.length < 2) {
       return void ($('#view').innerHTML = controls
-        + `<div class="empty">Select at least two models in the filter bar above${st.scope ? ' that have scored audits in this theme' : ''}.</div>`);
+        + `<div class="empty">Select at least two models in the filter bar above${st.scope ? ' with audits in this theme' : ''}.</div>`);
     }
+    const rank = new Map(ms.map((x, i) => [x.m, i + 1]));
 
-    const rows = [];
-    for (let i = 0; i < models.length; i++) {
-      for (let j = i + 1; j < models.length; j++) {
-        const r = compare(pool, models[i], models[j], f);
-        if (r) rows.push({ a: models[i], b: models[j], r });
-      }
-    }
-    rows.sort((x, y) => (x.r.p == null ? 2 : x.r.p) - (y.r.p == null ? 2 : y.r.p));
-
+    // every pair once; `cmp[row][col]` is row minus col
+    const cmp = {};
+    ms.forEach(({ m: a }) => {
+      cmp[a] = {};
+      ms.forEach(({ m: b }) => { if (a !== b && !cmp[a][b]) cmp[a][b] = compare(pool, b, a, f); });
+    });
     const sgn = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
     const pf = (v) => (v == null ? '—' : v < 0.001 ? '<0.001' : v.toFixed(3));
-    const win = (x) => x.r.p != null && x.r.p < 0.05;
-    const worse = (x) => (d.higher_better ? (x.r.mean < 0 ? x.b : x.a) : (x.r.mean > 0 ? x.b : x.a));
-    const key = (x) => `${x.b}|${x.a}`;
+    const sig = (r) => r && r.p != null && r.p < 0.05;
+    const rowBetter = (r) => (hiBetter ? r.mean > 0 : r.mean < 0);
+    const big = Math.max(...ms.flatMap(({ m: a }) => ms.map(({ m: b }) => (a !== b && sig(cmp[a][b]) ? Math.abs(cmp[a][b].mean) : 0))), 0.01);
+    const step = (r) => Math.min(3, Math.max(1, Math.ceil(3 * Math.abs(r.mean) / big)));
 
-    const body = rows.map((x) => `<tr class="clickable ${key(x) === st.pair ? 'onrow' : ''} ${win(x) ? '' : 'faint'}" data-pair="${esc(key(x))}">
-      <td class="model">${brk(x.b)} <span class="meta">minus</span> ${brk(x.a)}</td>
-      <td class="num">${x.r.n}<span class="meta">/${x.r.k}</span></td>
-      <td class="num"><b>${sgn(x.r.mean)}</b></td>
-      <td class="num">${x.r.half == null ? '—' : `${sgn(x.r.mean - x.r.half)} to ${sgn(x.r.mean + x.r.half)}`}</td>
-      <td class="num">${x.r.t == null ? '—' : x.r.t.toFixed(2)}</td>
-      <td class="num">${x.r.df}</td>
-      <td class="num">${pf(x.r.p)}</td>
-      <td class="${win(x) ? 'okc' : ''}">${win(x) ? `${brk(worse(x))} is worse` : 'no difference shown'}</td>
-    </tr>`).join('');
+    // ---- ranking, with each model's interval on one shared scale
+    const lo = Math.min(...ms.map((x) => x.s.mean - (x.s.half || 0)));
+    const hi = Math.max(...ms.map((x) => x.s.mean + (x.s.half || 0)));
+    const pad = (hi - lo) * 0.08 || 0.5;
+    const pc = (v) => `${(100 * (v - lo + pad) / (hi - lo + 2 * pad)).toFixed(1)}%`;
+    const ranking = `<h2>Ranking<span class="hint">${esc(dimShort(d.id))} · ${hiBetter ? 'higher is better' : 'lower is better'} · best first · bar is the 95% interval</span></h2>
+      <div class="scroll-x"><table class="list arith rank"><thead><tr>
+        <th class="num">#</th><th>model</th><th class="num">score</th><th class="num">audits</th><th>interval</th>
+      </tr></thead><tbody>
+      ${ms.map((x, i) => `<tr><td class="num rk">${i + 1}</td><td class="model">${brk(x.m)}</td>
+        <td class="num"><b>${x.s.mean.toFixed(2)}</b>${x.s.half != null ? `<span class="meta"> ${pm(x.s.half)}</span>` : ''}</td>
+        <td class="num">${x.s.n}</td>
+        <td class="ci" data-tip="${esc(`95% CI ${(x.s.mean - (x.s.half || 0)).toFixed(2)} to ${(x.s.mean + (x.s.half || 0)).toFixed(2)} over ${x.s.n} audits`)}">
+          <span class="bar" style="left:${pc(x.s.mean - (x.s.half || 0))};right:calc(100% - ${pc(x.s.mean + (x.s.half || 0))})"></span>
+          <span class="dot" style="left:${pc(x.s.mean)}"></span></td></tr>`).join('')}
+      </tbody></table></div>`;
 
-    const th = (l, tip) => `<th class="num" data-tip="${esc(tip)}">${l}</th>`;
-    const nWin = rows.filter(win).length;
-    $('#view').innerHTML = `${controls}
-      <div class="tiles">
-        <div class="tile"><div class="k">pairs</div><div class="v">${rows.length}</div><div class="d">${models.length} models${st.scope ? ` · ${esc(themeTitle(st.scope))} only` : ''}</div></div>
-        <div class="tile"><div class="k">differences at p &lt; 0.05</div><div class="v">${nWin}</div><div class="d">of ${rows.length} pairs</div></div>
-        <div class="tile"><div class="k">dimension</div><div class="v" style="font-size:18px">${esc(dimShort(d.id))}</div><div class="d">${dirLabel(d)}</div></div>
-        <div class="tile"><div class="k">audits in scope</div><div class="v">${pool.filter((t) => typeof f(t) === 'number').length}</div><div class="d">across ${new Set(pool.map((t) => t.seed)).size} seeds</div></div>
-      </div>
-      <h2>Model vs model<span class="hint">one row per pair · sorted by p · click a row to see it seed by seed</span></h2>
-      <div class="scroll-x"><table class="list arith"><thead><tr><th>pair</th>
-        ${th('audits', 'audits behind the comparison, and the seeds they span')}
-        ${th('Δ', 'difference in mean score — positive means the first model scored higher')}
-        ${th('95% CI', 'confidence interval for that difference')}
-        ${th('t', 'the difference divided by its standard error')}
-        ${th('df', 'degrees of freedom — audits, less one per seed per model')}
-        ${th('p', 'two-sided t-test that the difference is zero')}
-        <th>verdict</th></tr></thead><tbody>${body}</tbody></table></div>
-      <div class="legend">Each audit is a data point. The two models are compared within each seed and averaged, so a seed one model is missing cannot tilt the result.
-        Results describe this seed set${rows.length > 1 ? `, and with ${rows.length} pairs on screen about ${(rows.length * 0.05).toFixed(1)} would reach p &lt; 0.05 by chance alone — pick the pair before reading its p` : ''}.</div>
-      ${(() => {
-        const x = rows.find((y) => key(y) === st.pair);
-        if (!x) return '';
-        const se = (y) => Math.sqrt(y.v);
-        const wid = Math.max(...x.r.series.map((y) => Math.abs(y.d) + 1.96 * se(y)), 0.5);
-        return `<h2>${esc(x.b)} minus ${esc(x.a)}, seed by seed<span class="hint">each seed's own difference, with the interval its audits support</span></h2>
-        <div class="scroll-x"><table class="list arith"><thead><tr><th>seed</th>
-          <th class="num">Δ this seed</th><th class="num">±</th><th class="num">audits</th><th>where it sits</th></tr></thead><tbody>
-          ${x.r.series.slice().sort((m, n) => n.d - m.d).map((y) => {
-            const h = 1.96 * se(y), pc = (v) => `${(50 + 50 * v / wid).toFixed(1)}%`;
-            return `<tr><td class="model">${esc(y.seed)}</td>
-              <td class="num"><b>${sgn(y.d)}</b></td>
-              <td class="num">${se(y) ? `±${h.toFixed(2)}` : '—'}</td>
-              <td class="num">${y.nA}/${y.nB}</td>
-              <td class="forest"><span class="zero"></span><span class="bar" style="left:${pc(Math.min(y.d - h, y.d))};right:calc(100% - ${pc(Math.max(y.d + h, y.d))})"></span><span class="dot" style="left:${pc(y.d)}"></span></td></tr>`;
-          }).join('')}
-        </tbody></table></div>
-        <div class="legend">Pooled: <b>${sgn(x.r.mean)}</b>${x.r.half != null ? ` ±${x.r.half.toFixed(2)}` : ''}, p ${pf(x.r.p)} ·
-          ${x.r.series.filter((y) => Math.sign(y.d) === (Math.sign(x.r.mean) || 1)).length} of ${x.r.k} seeds point the same way.</div>`;
-      })()}`;
+    // ---- the matrix: read a row against a column
+    const cell = (a, b) => {
+      if (a === b) return '<td class="mxc self"></td>';
+      const r = cmp[a][b];
+      if (!r) return '<td class="mxc none">·</td>';
+      const cls = !sig(r) ? 'n0' : (rowBetter(r) ? 'b' : 'r') + step(r);
+      return `<td class="mxc ${cls} ${`${a}|${b}` === st.pair || `${b}|${a}` === st.pair ? 'on' : ''}" data-pair="${esc(`${a}|${b}`)}"
+        data-tip="${esc(`${a} vs ${b}\nΔ ${sgn(r.mean)}${r.half != null ? `, 95% CI ${sgn(r.mean - r.half)} to ${sgn(r.mean + r.half)}` : ''}\np ${pf(r.p)} · ${r.n} audits across ${r.k} seeds\n${
+          sig(r) ? `${rowBetter(r) ? a : b} is better` : 'no difference at p < 0.05'}\nclick for the seed-by-seed breakdown`)}">${sgn(r.mean)}</td>`;
+    };
+    const matrix = `<h2>Which is better than which<span class="hint">a row against each column · click a cell for the seeds behind it</span></h2>
+      <div class="scroll-x"><table class="list mx"><thead><tr><th></th><th></th>
+        ${ms.map((x, i) => `<th class="num" data-tip="${esc(x.m)}">${i + 1}</th>`).join('')}</tr></thead><tbody>
+      ${ms.map(({ m: a }) => `<tr><td class="num rk">${rank.get(a)}</td><td class="model">${brk(a)}</td>
+        ${ms.map(({ m: b }) => cell(a, b)).join('')}</tr>`).join('')}
+      </tbody></table></div>
+      <div class="legend mxlegend">
+        <span><i class="sw b3"></i> row scores better <span class="meta">(p &lt; 0.05)</span></span>
+        <span><i class="sw r3"></i> row scores worse</span>
+        <span><i class="sw n0"></i> no difference shown</span>
+        <span class="meta">stronger fill = bigger gap · the number is always the row minus the column</span>
+      </div>`;
+
+    // ---- the pair a cell opened, seed by seed
+    const [pa, pb] = st.pair.split('|');
+    const r = pa && pb && cmp[pa] ? cmp[pa][pb] : null;
+    const breakdown = !r ? '' : (() => {
+      const vals = r.series.flatMap((y) => [y.mA, y.mB]);
+      const lo2 = Math.min(...vals), hi2 = Math.max(...vals);
+      const pad2 = (hi2 - lo2) * 0.12 || 0.5;
+      const at = (v) => `${(100 * (v - lo2 + pad2) / (hi2 - lo2 + 2 * pad2)).toFixed(1)}%`;
+      const mA = mean(r.series.map((y) => y.mA)), mB = mean(r.series.map((y) => y.mB));
+      const better = hiBetter ? (mB > mA ? pb : pa) : (mB < mA ? pb : pa);
+      return `<h2>Seed by seed<span class="hint">both models' own scores on each seed — ${hiBetter ? 'higher' : 'lower'} is better</span></h2>
+      <div class="legend"><span><i class="sw s1"></i> ${esc(pb)}</span><span><i class="sw s2"></i> ${esc(pa)}</span></div>
+      <div class="scroll-x"><table class="list arith"><thead><tr><th>seed</th>
+        <th class="num"><i class="sw s1"></i> ${esc(shortAlias(pb))}</th>
+        <th class="num"><i class="sw s2"></i> ${esc(shortAlias(pa))}</th>
+        <th class="num">audits</th><th>scores</th></tr></thead><tbody>
+        ${r.series.slice().sort((m, n) => n.d - m.d).map((y) => {
+          const bWins = hiBetter ? y.mB > y.mA : y.mB < y.mA;
+          return `<tr><td class="model">${esc(y.seed)}</td>
+            <td class="num ${bWins ? 'okc' : ''}"><b>${y.mB.toFixed(2)}</b></td>
+            <td class="num ${bWins ? '' : 'okc'}"><b>${y.mA.toFixed(2)}</b></td>
+            <td class="num">${y.nB}/${y.nA}</td>
+            <td class="ci pairdots" data-tip="${esc(`${pb} ${y.mB.toFixed(2)} · ${pa} ${y.mA.toFixed(2)}`)}">
+              <span class="bar" style="left:${at(Math.min(y.mA, y.mB))};right:calc(100% - ${at(Math.max(y.mA, y.mB))})"></span>
+              <span class="dot s2" style="left:${at(y.mA)}"></span>
+              <span class="dot s1" style="left:${at(y.mB)}"></span></td></tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <div class="legend">Across these ${r.k} seeds <b>${esc(pb)}</b> averages <b>${mB.toFixed(2)}</b> and
+        <b>${esc(pa)}</b> <b>${mA.toFixed(2)}</b> — a gap of ${Math.abs(r.mean).toFixed(2)} in favour of <b>${esc(better)}</b>, p ${pf(r.p)}.
+        ${r.series.filter((y) => (hiBetter ? y.mB > y.mA : y.mB < y.mA) === (better === pb)).length} of ${r.k} seeds agree.</div>`;
+    })();
+
+    const nSig = ms.reduce((acc, { m: a }, i) => acc + ms.slice(i + 1).filter(({ m: b }) => sig(cmp[a][b])).length, 0);
+    const nPair = ms.length * (ms.length - 1) / 2;
+    $('#view').innerHTML = `${controls}${ranking}${matrix}${breakdown}
+      <div class="legend">${nSig} of ${nPair} pairs differ at p &lt; 0.05, from ${pool.filter((t) => typeof f(t) === 'number').length} audits across ${new Set(pool.map((t) => t.seed)).size} seeds.
+      Every audit is a data point; models are compared within each seed and averaged, so a seed one of them is missing cannot tilt the result.
+      ${nPair > 1 ? `With ${nPair} pairs on screen about ${(nPair * 0.05).toFixed(1)} would reach p &lt; 0.05 by chance — pick the pair before reading it.` : ''}</div>`;
   }
 
 
@@ -1353,7 +1387,7 @@
       route();
       return;
     }
-    const prow = e.target.closest('tr[data-pair]');
+    const prow = e.target.closest('[data-pair]');
     if (prow) {
       const cur = new URLSearchParams(location.hash.split('?')[1] || '');
       const q = new URLSearchParams();
