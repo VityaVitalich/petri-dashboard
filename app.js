@@ -167,6 +167,16 @@
     return g;
   }
 
+  // One seed on its own: Welch's t on that seed's audits, since the two models have
+  // their own spread there. A seed that never separates anything is a weak probe —
+  // worth knowing when deciding which seeds to keep.
+  function welch(y) {
+    if (!(y.v > 0) || y.nA < 2 || y.nB < 2) return null;
+    const df = (y.v * y.v) / (y.vA * y.vA / (y.nA - 1) + y.vB * y.vB / (y.nB - 1));
+    const t = y.d / Math.sqrt(y.v);
+    return { t, df, p: tPval(t, df) };
+  }
+
   // A vs B: compared inside each seed, then averaged. Blocked on seed for one
   // practical reason — a refused audit can leave a model without a seed entirely
   // (interview_target_goals is missing for half the models), and pooling raw audits
@@ -177,9 +187,9 @@
     const A = g(a), B = g(b);
     const series = [...A.keys()].filter((sd) => B.has(sd)).sort().map((sd) => {
       const xa = A.get(sd), xb = B.get(sd);
+      const vA = varOf(xa) / xa.length, vB = varOf(xb) / xb.length;
       return { seed: sd, mA: mean(xa), mB: mean(xb), d: mean(xb) - mean(xa),
-               nA: xa.length, nB: xb.length,
-               v: varOf(xa) / xa.length + varOf(xb) / xb.length };
+               nA: xa.length, nB: xb.length, vA, vB, v: vA + vB };
     });
     const k = series.length;
     if (!k) return null;
@@ -786,13 +796,15 @@
       <div class="scroll-x"><table class="list arith"><thead><tr><th>seed</th>
         <th class="num"><i class="sw s1"></i> ${esc(shortAlias(pb))}</th>
         <th class="num"><i class="sw s2"></i> ${esc(shortAlias(pa))}</th>
-        <th class="num">audits</th><th>scores</th></tr></thead><tbody>
+        <th class="num">audits</th><th class="num" data-tip="Welch's t on this seed's audits alone — does this one scenario separate them?">p, this seed</th><th>scores</th></tr></thead><tbody>
         ${r.series.slice().sort((m, n) => n.d - m.d).map((y) => {
           const bWins = hiBetter ? y.mB > y.mA : y.mB < y.mA;
+          const w = welch(y);
           return `<tr><td class="model">${esc(y.seed)}</td>
             <td class="num ${bWins ? 'okc' : ''}"><b>${y.mB.toFixed(2)}</b></td>
             <td class="num ${bWins ? '' : 'okc'}"><b>${y.mA.toFixed(2)}</b></td>
             <td class="num">${y.nB}/${y.nA}</td>
+            <td class="num ${w && w.p < 0.05 ? 'okc' : 'meta'}">${w ? pf(w.p) : '—'}</td>
             <td class="ci pairdots" data-tip="${esc(`${pb} ${y.mB.toFixed(2)} · ${pa} ${y.mA.toFixed(2)}`)}">
               <span class="bar" style="left:${at(Math.min(y.mA, y.mB))};right:calc(100% - ${at(Math.max(y.mA, y.mB))})"></span>
               <span class="dot s2" style="left:${at(y.mA)}"></span>
@@ -801,7 +813,10 @@
       </tbody></table></div>
       <div class="legend">Across these ${r.k} seeds <b>${esc(pb)}</b> averages <b>${mB.toFixed(2)}</b> and
         <b>${esc(pa)}</b> <b>${mA.toFixed(2)}</b> — a gap of ${Math.abs(r.mean).toFixed(2)} in favour of <b>${esc(better)}</b>, p ${pf(r.p)}.
-        ${r.series.filter((y) => (hiBetter ? y.mB > y.mA : y.mB < y.mA) === (better === pb)).length} of ${r.k} seeds agree.</div>`;
+        ${r.series.filter((y) => (hiBetter ? y.mB > y.mA : y.mB < y.mA) === (better === pb)).length} of ${r.k} seeds agree,
+        and ${r.series.filter((y) => { const w = welch(y); return w && w.p < 0.05; }).length} separate the two on their own.
+        A single seed at ${Math.round(mean(r.series.map((y) => (y.nA + y.nB) / 2)))} audits per model can only see a gap of about
+        ${(2.8 * Math.sqrt(mean(r.series.map((y) => y.v)))).toFixed(1)} points, so most will read as "no difference" even where the pooled answer is clear.</div>`;
     })();
 
     const nSig = ms.reduce((acc, { m: a }, i) => acc + ms.slice(i + 1).filter(({ m: b }) => sig(cmp[a][b])).length, 0);
