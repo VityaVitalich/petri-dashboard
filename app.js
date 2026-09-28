@@ -231,6 +231,24 @@
     return Math.min(1, 2 * tail / Math.pow(2, k));
   }
 
+  // Every epoch as a data point — legitimate, but it changes the claim. Treating the
+  // seed set as the instrument (a fixed test set, the way a benchmark is normally
+  // read) makes epochs the only randomness, so the error comes from within-seed
+  // variance alone and df runs into the hundreds. The answer is then "on THESE
+  // scenarios", and says nothing about the next ones. The gap between this and the
+  // seed-level answer is exactly tau2: where the difference is constant across
+  // scenarios, the two coincide.
+  function fixedSeeds(series) {
+    const k = series.length;
+    if (!k) return null;
+    const mu = mean(series.map((x) => x.d));
+    const se = Math.sqrt(series.reduce((a, x) => a + x.v, 0)) / k;
+    const df = series.reduce((a, x) => a + x.nA + x.nB, 0) - 2 * k;
+    if (df < 1 || !(se > 0)) return null;
+    const t = mu / se;
+    return { mean: mu, se, k, df, t, p: tPval(t, df), half: t95(df) * se, fixed: true };
+  }
+
   // Holm step-down: same family-wise error guarantee as Bonferroni, never weaker.
   // Comparing k models pairwise is k(k-1)/2 tests at once, and at 5% each you get
   // a false winner roughly every twenty rows.
@@ -810,8 +828,11 @@
     const controls = `<div class="ctls">
       ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to test')}
       ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope, 'restrict to one theme — they measure different things')}
-      ${sel('wt', 'weighting', [{ v: 'equal', l: 'equal per seed' }, { v: 'prec', l: 'by precision (random effects)' }], st.wt,
-            'equal counts every seed once; precision weights a seed by how tightly its own epochs pin the difference down, and estimates how much the difference really varies between scenarios')}
+      ${sel('wt', 'error from', [
+              { v: 'equal', l: 'seeds — generalizes' },
+              { v: 'prec', l: 'seeds, precision-weighted' },
+              { v: 'fixed', l: 'epochs — these seeds only' }], st.wt,
+            'seeds: every seed counts once and the answer carries to scenarios you have not written yet\nprecision: same, but a seed its own epochs pin down tightly counts for more\nepochs: treats this seed set as the benchmark, so every audit is a data point — much tighter, but the claim is only about these seeds')}
       ${sel('test', 'test', [{ v: 't', l: 'paired t' }, { v: 'flip', l: 'exact sign-flip' }], st.test,
             'paired t uses the size of each difference and assumes they are roughly symmetric; the sign-flip test assumes nothing but can only return multiples of 1/2^seeds')}
       ${sel('corr', 'correction', [{ v: 'holm', l: 'Holm' }, { v: 'bonf', l: 'Bonferroni' }, { v: 'none', l: 'none (raw p)' }], st.corr, 'how to account for testing many pairs at once')}
@@ -829,8 +850,11 @@
         if (!series.length) continue;
         const eq = ciOf(series.map((x) => x.d));
         const re = reMeta(series);
-        const r = (st.wt === 'prec' && re) ? Object.assign({}, re, { ds: series.map((x) => x.d) }) : eq;
-        if (r) rows.push({ a: models[i], b: models[j], r, series, eq, re, k: series.length });
+        const fx = fixedSeeds(series);
+        const r = st.wt === 'prec' && re ? Object.assign({}, re, { ds: series.map((x) => x.d) })
+                : st.wt === 'fixed' && fx ? Object.assign({}, fx, { ds: series.map((x) => x.d) })
+                : eq;
+        if (r) rows.push({ a: models[i], b: models[j], r, series, eq, re, fx, k: series.length });
       }
     }
     rows.forEach((x) => {
@@ -886,6 +910,13 @@
         <div class="tile"><div class="k">dimension</div><div class="v" style="font-size:18px">${esc(dimShort(d.id))}</div><div class="d">${dirLabel(d)}</div></div>
         <div class="tile"><div class="k">false winners expected</div><div class="v">${(rows.length * 0.05).toFixed(1)}</div><div class="d">at raw p &lt; 0.05, if no model differed</div></div>
       </div>
+      ${st.wt === 'fixed' ? `<div class="banner"><b>Reading these seeds as the benchmark.</b>
+        Every audit counts as a data point and the intervals are about 40% narrower, which is valid —
+        but the claim narrows with them: <b>"on these ${rows.length ? rows[0].k : ''} scenarios"</b>, not
+        "on this kind of behaviour". A difference here need not survive on seeds you have not written yet.
+        Where a pair's τ² is 0 the two readings agree; where it is large they do not.
+        ${rows.filter((x) => x.fx && x.fx.p < 0.05).length} pairs clear 5% this way against
+        ${rows.filter((x) => x.eq && x.eq.p < 0.05).length} the other.</div>` : ''}
       <div class="banner plain"><b>The short version:</b> read the <b>agree</b> column. If the two models were the same,
         each seed is a coin flip, so ${rows.length && rows[0].k ? `at ${rows[0].k} seeds you need ${rows[0].k}/${rows[0].k} (p ${(signP(rows[0].k, rows[0].k) || 0).toFixed(3)})${rows[0].k >= 9 ? ` or ${rows[0].k - 1}/${rows[0].k} (p ${(signP(rows[0].k - 1, rows[0].k) || 0).toFixed(3)})` : ''}` : 'you need every seed'} to clear 5%.
         That test assumes nothing and no single odd seed can move it. Everything to its right is the same question asked more precisely, using how big each difference was.</div>
@@ -922,7 +953,8 @@
         </tbody></table></div>
         <div class="legend">Pooled: <b>${x.r.mean >= 0 ? '+' : '−'}${Math.abs(x.r.mean).toFixed(2)}</b> ${x.r.half != null ? `±${x.r.half.toFixed(2)}` : ''} · ${x.agree} of ${x.k} seeds point the same way${
           x.re ? ` · τ² = ${x.re.tau2.toFixed(2)}${x.re.tau2 === 0 ? ' — the seeds agree to within epoch noise, so the difference looks constant across scenarios' : ' — the difference genuinely varies by scenario, which is why the pooled interval is wide'}` : ''}.
-          Equal-weight Δ ${x.eq.mean.toFixed(2)}, p ${pf(x.eq.p)}; precision-weighted Δ ${x.re ? x.re.mean.toFixed(2) : '—'}, p ${x.re ? pf(x.re.p) : '—'}.</div>`;
+          Same difference, three error terms: over seeds p ${pf(x.eq.p)}; precision-weighted p ${x.re ? pf(x.re.p) : '—'}; over epochs with these seeds fixed p ${x.fx ? pf(x.fx.p) : '—'}${
+            x.fx && x.eq.p != null && x.fx.p != null && x.eq.p > 0.05 && x.fx.p < 0.05 ? ' — the last one disagrees, which means this difference rests on the particular seeds' : ''}.</div>`;
       })()}
       <details class="box"><summary>What this test assumes, and what it cannot tell you</summary><div class="body">Each seed contributes one difference, and those differences are treated as independent draws from one distribution — reasonable, since seeds were written separately. The <b>seed</b> is the unit because both models were given the same seeds, while the epochs inside one are re-runs of a single scenario; testing at the leaf level instead treats those re-runs as fresh evidence and shrinks p by more than tenfold. Analysing leaves is fine if the standard error is clustered on seed, but that lands back on these same numbers, and under ten clusters is exactly where cluster-robust errors are least trustworthy. On the two tests: the paired t uses how big each difference is and assumes the differences are roughly symmetric, which under ten seeds cannot be checked; the sign-flip test assumes nothing but is discrete, so at ${rows.length ? rows[0].r.k : 6} seeds nothing can come in under ${rows.length && flipFloor(rows[0].r.k) != null ? flipFloor(rows[0].r.k).toFixed(3) : '—'} however large the effect — a rank test such as Wilcoxon has the same floor and additionally throws the sizes away. A p-value answers "how surprising is a difference this large if the two models were identical", not "how big is the difference" — read the Δ and its interval for that. Non-significant never means equal: at this sample size a real half-point gap would go undetected most of the time. And with ${rows.length} pairs on screen the correction is doing real work — turn it off only for a pair you chose before looking.</div></details>`;
   }
