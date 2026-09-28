@@ -85,12 +85,11 @@
   const tById = (id) => S.idx.transcripts.find((t) => t.id === id);
 
   // ------------------------------------------------------ uncertainty ----
-  // Epochs of one seed are NOT independent draws: the seed fixes the scenario, and
-  // in this corpus 58% of the variance in a leaf score sits between seeds. Pooling
-  // leaves as if they were independent makes the interval about 3x too narrow. So
-  // the unit of replication here is the seed — mean within a seed, then a t
-  // interval over those seed means. `n` stays the leaf count (what was judged);
-  // `ci.k` is the number that actually carries the uncertainty.
+  // The unit is the audit. The seeds inside a theme probe one construct from
+  // different angles, so a seed is a facet of the instrument rather than a draw
+  // from a wider population of scenarios, and every audit counts. The consequence
+  // to keep in view: the numbers describe the seed set that produced them, and a
+  // difference here is not a promise about seeds nobody has written yet.
   function lgamma(z) {
     const G = [676.5203681218851, -1259.1392167224028, 771.32342877765313,
                -176.61502916214059, 12.507343278686905, -0.13857109526572012,
@@ -136,133 +135,26 @@
                2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
                2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042];
   const t95 = (df) => (df < 1 ? null : df <= 30 ? T95[df] : df <= 60 ? 2.00 : 1.96);
+  const pm = (h) => (h == null ? '' : `±${h.toFixed(2)}`);
+
+  // Every audit is a data point. The seeds of a theme probe one construct from
+  // different angles, so a seed is a facet of the instrument rather than a draw from
+  // some wider population of scenarios — which makes the audit the unit. Read the
+  // results as being about this seed set.
   function ciOf(xs) {
     if (!xs.length) return null;
     const m = mean(xs);
-    if (xs.length < 2) return { mean: m, half: null, k: xs.length };
-    const sd = Math.sqrt(xs.reduce((a, x) => a + (x - m) * (x - m), 0) / (xs.length - 1));
-    const se = sd / Math.sqrt(xs.length);
-    // one-sample t against 0 — meaningful for a paired difference, which is the
-    // only thing the stats view runs it on
-    const t = se > 0 ? m / se : (m === 0 ? 0 : Infinity);
-    return { mean: m, half: t95(xs.length - 1) * se, k: xs.length, se, t, df: xs.length - 1,
-             p: tPval(t, xs.length - 1) };
+    if (xs.length < 2) return { mean: m, half: null, n: 1 };
+    const se = stderr(xs);
+    return { mean: m, half: t95(xs.length - 1) * se, se, n: xs.length };
   }
 
-  // The only randomisation this paired design has is which of the two models is
-  // called "first" within a seed. Flipping the sign of each seed's difference
-  // enumerates every outcome consistent with the two models being identical, so
-  // the resulting p assumes nothing about the shape of the differences — unlike
-  // the t-test, which assumes they are roughly symmetric and cannot be checked at
-  // this many seeds. The cost is discreteness: with k seeds there are 2^k
-  // outcomes, so no result can come in under 2/2^k however large the effect.
-  const FLIP_MAX = 16;
-  function signFlipP(ds) {
-    const k = ds.length;
-    if (!k || k > FLIP_MAX) return null;
-    const obs = Math.abs(ds.reduce((a, b) => a + b, 0)) - 1e-12;
-    const N = 1 << k;
-    let hits = 0;
-    for (let m = 0; m < N; m++) {
-      let sum = 0;
-      for (let i = 0; i < k; i++) sum += (m >> i) & 1 ? -ds[i] : ds[i];
-      if (Math.abs(sum) >= obs) hits++;
-    }
-    return hits / N;
-  }
-  const flipFloor = (k) => (k > FLIP_MAX ? null : 2 / Math.pow(2, k));
-
-  // Per-seed differences PLUS how precisely each one is measured. Epoch noise is
-  // already inside the spread of the differences — Var(delta) = between-seed +
-  // within/epochs — so collapsing a seed to its mean does not discard it. What
-  // equal weighting does discard is that seeds differ in how noisy they are, by
-  // over 4x in this corpus, so a seed measured badly counts the same as one
-  // measured well.
   const varOf = (xs) => {
     if (xs.length < 2) return 0;
     const m = mean(xs);
     return xs.reduce((a, x) => a + (x - m) * (x - m), 0) / (xs.length - 1);
   };
-  function pairedSeries(ts, a, b, f, theme) {
-    const g = (m) => seedMeans(ts.filter((t) => t.alias === m && (!theme || t.theme === theme)), f);
-    const A = g(a), B = g(b);
-    return [...A.keys()].filter((sd) => B.has(sd)).sort().map((sd) => {
-      const xa = A.get(sd), xb = B.get(sd);
-      return { seed: sd, d: mean(xb) - mean(xa), nA: xa.length, nB: xb.length,
-               v: varOf(xa) / xa.length + varOf(xb) / xb.length };
-    });
-  }
-
-  // Random-effects meta-analysis over seeds: each seed is one estimate carrying its
-  // own within-seed variance, and tau2 measures how much the difference genuinely
-  // varies from scenario to scenario on top of that. tau2 = 0 means the seeds agree
-  // to within epoch noise — the strongest thing this design can say. Hartung-Knapp
-  // for the interval, since DerSimonian-Laird alone is anticonservative under ten
-  // studies, which is exactly where we are.
-  function reMeta(series) {
-    const k = series.length;
-    if (k < 2) return null;
-    const D = series.map((x) => x.d);
-    const V = series.map((x) => Math.max(x.v, 1e-9));
-    const w0 = V.map((v) => 1 / v), sw0 = w0.reduce((a, b) => a + b, 0);
-    const mu0 = D.reduce((a, d, i) => a + w0[i] * d, 0) / sw0;
-    const Q = D.reduce((a, d, i) => a + w0[i] * (d - mu0) * (d - mu0), 0);
-    const c = sw0 - w0.reduce((a, w) => a + w * w, 0) / sw0;
-    const tau2 = Math.max(0, (Q - (k - 1)) / c);
-    const w = V.map((v) => 1 / (v + tau2)), sw = w.reduce((a, b) => a + b, 0);
-    const mu = D.reduce((a, d, i) => a + w[i] * d, 0) / sw;
-    const q = D.reduce((a, d, i) => a + w[i] * (d - mu) * (d - mu), 0) / (k - 1);
-    const se = Math.sqrt(Math.max(q, 1) / sw);      // Hartung-Knapp, floored at fixed-effect
-    const t = se > 0 ? mu / se : 0;
-    return { mean: mu, se, k, df: k - 1, t, p: tPval(t, k - 1), half: t95(k - 1) * se, tau2 };
-  }
-
-  // The simple one. Forget sizes: on how many seeds did this model come out worse?
-  // If the two were the same each seed is a coin flip, so the count is binomial and
-  // the p needs nothing estimated from the data — no variance, no normality, no
-  // weighting, and no single wild seed can move it. It costs power (it agrees with
-  // the paired t on 26 of 28 pairs here, missing two where one seed dissents but
-  // the rest are large), which makes it the strict reading rather than the loose one.
-  function signP(wins, k) {
-    if (!k) return null;
-    const w = Math.max(wins, k - wins);
-    let tail = 0, c = 1;                       // c = C(k, i), stepped down from i = k
-    for (let i = k; i >= w; i--) { tail += c; c = c * i / (k - i + 1); }
-    return Math.min(1, 2 * tail / Math.pow(2, k));
-  }
-
-  // Every epoch as a data point — legitimate, but it changes the claim. Treating the
-  // seed set as the instrument (a fixed test set, the way a benchmark is normally
-  // read) makes epochs the only randomness, so the error comes from within-seed
-  // variance alone and df runs into the hundreds. The answer is then "on THESE
-  // scenarios", and says nothing about the next ones. The gap between this and the
-  // seed-level answer is exactly tau2: where the difference is constant across
-  // scenarios, the two coincide.
-  function fixedSeeds(series) {
-    const k = series.length;
-    if (!k) return null;
-    const mu = mean(series.map((x) => x.d));
-    const se = Math.sqrt(series.reduce((a, x) => a + x.v, 0)) / k;
-    const df = series.reduce((a, x) => a + x.nA + x.nB, 0) - 2 * k;
-    if (df < 1 || !(se > 0)) return null;
-    const t = mu / se;
-    return { mean: mu, se, k, df, t, p: tPval(t, df), half: t95(df) * se, fixed: true };
-  }
-
-  // Holm step-down: same family-wise error guarantee as Bonferroni, never weaker.
-  // Comparing k models pairwise is k(k-1)/2 tests at once, and at 5% each you get
-  // a false winner roughly every twenty rows.
-  function adjust(ps, how) {
-    const out = ps.map(() => null);
-    if (how === 'none') return ps.slice();
-    const ix = ps.map((v, i) => [v, i]).filter(([v]) => typeof v === 'number').sort((a, b) => a[0] - b[0]);
-    const m = ix.length;
-    if (how === 'bonf') { ix.forEach(([v, i]) => { out[i] = Math.min(1, v * m); }); return out; }
-    let run = 0;
-    ix.forEach(([v, i], j) => { run = Math.max(run, Math.min(1, (m - j) * v)); out[i] = run; });
-    return out;
-  }
-  function seedMeans(ts, f) {
+  function bySeed(ts, f) {
     const g = new Map();
     ts.forEach((t) => {
       const v = f(t);
@@ -272,13 +164,36 @@
     });
     return g;
   }
-  const seedMeanList = (ts, f) => [...seedMeans(ts, f).values()].map(mean);
-  const pm = (h) => (h == null ? '' : `±${h.toFixed(2)}`);
+
+  // A vs B: compared inside each seed, then averaged. Blocked on seed for one
+  // practical reason — a refused audit can leave a model without a seed entirely
+  // (interview_target_goals is missing for half the models), and pooling raw audits
+  // would then score two models on different seed mixes. The error still comes from
+  // the audits, so df is the audit count.
+  function compare(ts, a, b, f, theme) {
+    const g = (m) => bySeed(ts.filter((t) => t.alias === m && (!theme || t.theme === theme)), f);
+    const A = g(a), B = g(b);
+    const series = [...A.keys()].filter((sd) => B.has(sd)).sort().map((sd) => {
+      const xa = A.get(sd), xb = B.get(sd);
+      return { seed: sd, d: mean(xb) - mean(xa), nA: xa.length, nB: xb.length,
+               v: varOf(xa) / xa.length + varOf(xb) / xb.length };
+    });
+    const k = series.length;
+    if (!k) return null;
+    const m = mean(series.map((x) => x.d));
+    const se = Math.sqrt(series.reduce((acc, x) => acc + x.v, 0)) / k;
+    const df = series.reduce((acc, x) => acc + x.nA + x.nB, 0) - 2 * k;
+    const base = { mean: m, k, df, series, n: df + 2 * k };
+    if (df < 1 || !(se > 0)) return Object.assign(base, { half: null, se: null, t: null, p: null });
+    const t = m / se;
+    return Object.assign(base, { half: t95(df) * se, se, t, p: tPval(t, df) });
+  }
+
 
   function stat(ts, d) {
     const xs = ts.map((t) => dimVal(t, d)).filter((v) => typeof v === 'number');
     if (!xs.length) return null;
-    return { mean: mean(xs), se: stderr(xs), n: xs.length, ci: ciOf(seedMeanList(ts, (t) => dimVal(t, d))) };
+    return ciOf(xs);
   }
   function filtered() {
     return S.idx.transcripts.filter((t) => S.f.models.has(t.alias) && S.f.seeds.has(t.seed) && S.f.runs.has(t.run_id));
@@ -299,11 +214,9 @@
     const payload = await loadRun(t.run_id);
     return payload.transcripts.find((x) => x.id === tid) || null;
   }
-  const cellTip = (d, st) => `${dimShort(d.id)} — ${d.desc || d.id}\nmean ${st.mean.toFixed(2)}  (n=${st.n} leaves)${
-    st.ci && st.ci.half != null
-      ? `\n95% CI ${(st.ci.mean - st.ci.half).toFixed(2)} to ${(st.ci.mean + st.ci.half).toFixed(2)}, clustered on seed (k=${st.ci.k})`
-        + `\nseed-balanced mean ${st.ci.mean.toFixed(2)} · leaf se ±${st.se.toFixed(2)} would be ~3x too narrow`
-      : ''}\n${d.inverted ? 'lower = better (inverted)' : (d.higher_better ? 'higher = better' : 'higher = worse')}`;
+  const cellTip = (d, st) => `${dimShort(d.id)} — ${d.desc || d.id}\nmean ${st.mean.toFixed(2)}  (n=${st.n} audits)${
+    st.half != null ? `\n95% CI ${(st.mean - st.half).toFixed(2)} to ${(st.mean + st.half).toFixed(2)}` : ''
+    }\n${d.inverted ? 'lower = better (inverted)' : (d.higher_better ? 'higher = better' : 'higher = worse')}`;
 
   // ------------------------------------------------------------ filters ----
   // Three searchable multi-select dropdowns (models · seeds · runs). Scales to
@@ -624,20 +537,6 @@
     });
   }
 
-  // Two models saw the same seeds, so compare them seed by seed: the scenario —
-  // which is most of the variance — cancels in the difference instead of being
-  // counted as noise. Seeds only one of the two has (the other's audits refused)
-  // are dropped, because an unpaired seed carries no difference.
-  function pairedDelta(ts, a, b, f, theme) {
-    const pick = (m) => seedMeans(ts.filter((t) => t.alias === m && (!theme || t.theme === theme)), f);
-    const A = pick(a), B = pick(b);
-    const ds = [...A.keys()].filter((sd) => B.has(sd)).map((sd) => mean(B.get(sd)) - mean(A.get(sd)));
-    if (!ds.length) return null;
-    const r = ciOf(ds);
-    r.ds = ds;   // the exact test re-uses them; too costly to carry through stat()
-    return r;
-  }
-
   // Themes measure different things, so pooling them cancels real differences out.
   // Break the headline down by theme before anyone reads the corpus-wide means.
   function themeTable(models, ts) {
@@ -647,11 +546,10 @@
     const cell = (m, th, f) => {
       const sel = ts.filter((t) => t.alias === m && t.theme === th && t.pressure);
       const xs = sel.map((t) => f(t.pressure)).filter((v) => typeof v === 'number');
-      return xs.length ? { mean: mean(xs), se: stderr(xs), n: xs.length,
-                           ci: ciOf(seedMeanList(sel, (t) => f(t.pressure))) } : null;
+      return ciOf(xs);
     };
     const SEV = (p) => p.concession_severity, HEAD = (p) => p[CGP];
-    const num = (st) => (st ? `${st.mean.toFixed(2)}${st.ci && st.ci.half != null ? `<span class="meta"> ${pm(st.ci.half)}</span>` : ''}` : '–');
+    const num = (st) => (st ? `${st.mean.toFixed(2)}${st.half != null ? `<span class="meta"> ${pm(st.half)}</span>` : ''}` : '–');
     const head1 = ths.map((th) => {
       const sd = [...new Set(ts.filter((t) => t.theme === th).map((t) => t.seed))];
       const off = sd.filter((s) => seedOf(s).status === 'disabled').length;
@@ -671,7 +569,7 @@
     let delta = '';
     if (models.length === 2) {
       const d = (th, f) => {
-        const dl = pairedDelta(ts, models[0], models[1], (t) => f(t.pressure || {}), th);
+        const dl = compare(ts, models[0], models[1], (t) => f(t.pressure || {}), th);
         if (!dl) return '';
         const held = dl.half != null && Math.abs(dl.mean) > dl.half;
         return `<span class="${held ? 'okc' : 'muted'}">${dl.mean >= 0 ? '+' : '−'}${Math.abs(dl.mean).toFixed(2)}</span>`
@@ -680,7 +578,7 @@
       delta = `<tr class="drow"><td class="model">Δ  ${brk(models[1])} − ${brk(models[0])}</td>${
         ths.map((th) => `<td class="num">${d(th, SEV)}</td><td class="num"><b>${d(th, HEAD)}</b></td>`).join('')}</tr>`;
     }
-    return `<h2>Headline by theme<span class="hint">the themes measure different things — read them apart before reading the corpus mean · models are rows · click any column to order them · ± is a 95% CI, clustered on seed</span></h2>
+    return `<h2>Headline by theme<span class="hint">the themes measure different things — read them apart before reading the corpus mean · models are rows · click any column to order them · ± is a 95% CI over the audits</span></h2>
       <div class="scroll-x"><table class="list arith themes"><thead><tr><th></th>${head1}</tr><tr><th class="${msortOn('alias').trim()}" data-msort="alias" data-tip="click to order the models by name">model${msortDir('alias')}</th>${head2}</tr></thead>
       <tbody>${rows}${delta}</tbody></table></div>`;
   }
@@ -700,13 +598,13 @@
       coer: ds.filter((p) => move(p, 'stacked coercion') < 0).length,
       disc: av((p) => p.discount),
       head: av((p) => p[CGP]),
-      ci: ciOf(seedMeanList(ts.filter((t) => t.alias === m), (t) => (t.pressure || {})[CGP])) };
+      ci: ciOf(ts.filter((t) => t.alias === m).map((t) => (t.pressure || {})[CGP]).filter((v) => typeof v === 'number')) };
   }
   function arithmeticTable(models, ts) {
     const rows = models.map((m) => arithRow(m, ts)).filter(Boolean);
     if (!rows.length) return '';
     const th = (l, tip, key) => `<th class="num${msortOn(key)}" data-msort="${esc(key)}" data-tip="${esc(tip)}\n(click to order the models by this column)">${l}${msortDir(key)}</th>`;
-    return `<h2>How the headline is formed<span class="hint">severity, then the criterion's moves — averaged over the selected transcripts · models are rows · click any column to order them · ± is a 95% CI, clustered on seed</span></h2>
+    return `<h2>How the headline is formed<span class="hint">severity, then the criterion's moves — averaged over the selected transcripts · models are rows · click any column to order them · ± is a 95% CI over the audits</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr>
         <th class="${msortOn('alias').trim()}" data-msort="alias" data-tip="click to order the models by name">model${msortDir('alias')}</th>
         ${th('severity', 'mean concession_severity — the start point, badness of the thing on its own merits', 'arith:sev')}
@@ -726,25 +624,6 @@
       </tbody></table></div>`;
   }
 
-  // How much of a leaf score is the seed rather than the model. When this is high,
-  // pooling leaves as independent draws is what makes the intervals look tight, and
-  // adding epochs cannot help — only adding seeds can.
-  function betweenSeedShare(ts, f) {
-    let bw = 0, wn = 0;
-    [...new Set(ts.map((t) => t.alias))].forEach((m) => {
-      const sel = ts.filter((t) => t.alias === m);
-      const xs = sel.map(f).filter((v) => typeof v === 'number');
-      if (xs.length < 2) return;
-      const gm = mean(xs);
-      seedMeans(sel, f).forEach((vs) => {
-        const sm = mean(vs);
-        bw += vs.length * (sm - gm) * (sm - gm);
-        vs.forEach((v) => { wn += (v - sm) * (v - sm); });
-      });
-    });
-    return bw + wn > 0 ? bw / (bw + wn) : null;
-  }
-
   // "Is A really different from B?" — which the two means cannot answer on their
   // own: overlapping intervals can still hide a real paired difference, and two
   // separated ones can still be one seed pulling both models apart. Split by theme,
@@ -760,7 +639,7 @@
     const rows = [];
     for (let i = 0; i < models.length; i++) {
       for (let j = i + 1; j < models.length; j++) {
-        const cells = cols.map((c) => pairedDelta(ts, models[i], models[j], f, c.id));
+        const cells = cols.map((c) => compare(ts, models[i], models[j], f, c.id));
         if (cells[0]) rows.push({ a: models[i], b: models[j], cells });
       }
     }
@@ -775,14 +654,13 @@
       if (!d) return '<td class="num na">–</td>';
       const thin = d.k < THIN;
       const tip = d.half == null
-        ? `only ${d.k} shared seed — no interval`
-        : `95% CI ${sgn(d.mean - d.half)} to ${sgn(d.mean + d.half)}\n${d.k} seeds both models were audited on`
-          + (thin ? `\n⚠ ${d.k} seeds is too few for this interval to be worth much` : '');
+        ? `not enough audits for an interval`
+        : `95% CI ${sgn(d.mean - d.half)} to ${sgn(d.mean + d.half)}\n${d.n} audits across ${d.k} seeds`
+          + (thin ? `\n⚠ only ${d.k} seeds contribute here` : '');
       return `<td class="num" data-tip="${esc(tip)}"><span class="${held(d) ? 'okc' : ''}">${sgn(d.mean)}</span>`
         + `${d.half == null ? '' : `<span class="meta"> ${pm(d.half)}</span>`}${thin ? '<span class="meta thin">?</span>' : ''}</td>`;
     };
     const nHeld = rows.filter((r) => held(r.cells[0])).length;
-    const share = betweenSeedShare(ts, f);
     const nThin = cols.filter((c, i) => rows.some((r) => r.cells[i] && r.cells[i].k < THIN)).length;
     const head = `<tr><th>pair</th>${cols.map((c, ci) => {
       const ks = [...new Set(rows.map((r) => r.cells[ci]).filter(Boolean).map((d) => d.k))].sort((x, y) => x - y);
@@ -797,45 +675,34 @@
         ${nHeld} of ${rows.length} clear it on all seeds.${
         rows.length > 1 ? ` With ${rows.length} pairs on screen, about ${(rows.length * 0.05).toFixed(1)} would clear zero by chance even if every model were identical — so a difference is evidence only for a pair you picked before looking.` : ''}${
         nThin ? ' A <b>?</b> marks a column with too few shared seeds for its interval to be worth much.' : ''}${
-        share != null ? ` ${Math.round(share * 100)}% of the variance in a leaf score is between seeds rather than within one, so these intervals are set by how much the seeds disagree: more epochs cannot narrow them, more seeds can.` : ''}</div>`;
-    const h2 = `<h2>Does the difference hold up?<span class="hint">every pair of selected models, matched seed by seed · by theme, because they can disagree</span></h2>`;
+        ''}</div>`;
+    const h2 = `<h2>Does the difference hold up?<span class="hint">every pair of selected models · by theme, because the themes can disagree</span></h2>`;
     return rows.length > 6
       ? `${h2}<details class="box"><summary>${rows.length} pairs · ${nHeld} clear zero on all seeds</summary><div class="body nw">${table}</div></details>`
       : h2 + table;
   }
 
   // ---------------------------------------------------------------- stats ----
-  // Every pair of the selected models on one dimension, tested the way the design
-  // allows: the two models saw the same seeds, so the comparison is paired on the
-  // seeds they share and each seed contributes one number. That makes the seed —
-  // not the leaf — the unit, which is the whole point: epochs of one seed are
-  // re-runs of the same scenario, and counting them as independent is what makes a
-  // difference look real when it is not.
+  // Every pair of the selected models on one dimension. Each audit is a data point;
+  // the two models are compared inside each seed and averaged, so a model missing a
+  // seed cannot tip the result, and the error comes from the audits themselves.
   function renderStats(query) {
     const ts = filtered();
-    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '',
-                 corr: query.get('corr') || 'holm', test: query.get('test') || 't',
-                 wt: query.get('wt') || 'equal', pair: query.get('pair') || '' };
+    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '', pair: query.get('pair') || '' };
     const d = dimById(st.dim);
     const f = (t) => dimVal(t, d);
     const ths = [...new Set(ts.map((t) => t.theme).filter(Boolean))]
       .sort((a, b) => ts.filter((t) => t.theme === b).length - ts.filter((t) => t.theme === a).length);
     const pool = st.scope ? ts.filter((t) => t.theme === st.scope) : ts;
-    const models = [...new Set(pool.map((t) => t.alias))].filter((m) => pool.some((t) => t.alias === m && typeof f(t) === 'number')).sort();
+    const models = [...new Set(pool.map((t) => t.alias))]
+      .filter((m) => pool.some((t) => t.alias === m && typeof f(t) === 'number')).sort();
 
     const sel = (key, label, opts, val, tip) => `<label class="ctl" data-tip="${esc(tip)}">${label}
       <select data-st="${key}">${opts.map((o) => `<option value="${esc(o.v)}"${o.v === val ? ' selected' : ''}>${esc(o.l)}</option>`).join('')}</select></label>`;
     const controls = `<div class="ctls">
-      ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to test')}
-      ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope, 'restrict to one theme — they measure different things')}
-      ${sel('wt', 'error from', [
-              { v: 'equal', l: 'seeds — generalizes' },
-              { v: 'prec', l: 'seeds, precision-weighted' },
-              { v: 'fixed', l: 'epochs — these seeds only' }], st.wt,
-            'seeds: every seed counts once and the answer carries to scenarios you have not written yet\nprecision: same, but a seed its own epochs pin down tightly counts for more\nepochs: treats this seed set as the benchmark, so every audit is a data point — much tighter, but the claim is only about these seeds')}
-      ${sel('test', 'test', [{ v: 't', l: 'paired t' }, { v: 'flip', l: 'exact sign-flip' }], st.test,
-            'paired t uses the size of each difference and assumes they are roughly symmetric; the sign-flip test assumes nothing but can only return multiples of 1/2^seeds')}
-      ${sel('corr', 'correction', [{ v: 'holm', l: 'Holm' }, { v: 'bonf', l: 'Bonferroni' }, { v: 'none', l: 'none (raw p)' }], st.corr, 'how to account for testing many pairs at once')}
+      ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to compare')}
+      ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope,
+            'restrict to one theme — the themes measure different things, so an effect in one can be absent in the other')}
     </div>`;
 
     if (models.length < 2) {
@@ -846,118 +713,71 @@
     const rows = [];
     for (let i = 0; i < models.length; i++) {
       for (let j = i + 1; j < models.length; j++) {
-        const series = pairedSeries(pool, models[i], models[j], f);
-        if (!series.length) continue;
-        const eq = ciOf(series.map((x) => x.d));
-        const re = reMeta(series);
-        const fx = fixedSeeds(series);
-        const r = st.wt === 'prec' && re ? Object.assign({}, re, { ds: series.map((x) => x.d) })
-                : st.wt === 'fixed' && fx ? Object.assign({}, fx, { ds: series.map((x) => x.d) })
-                : eq;
-        if (r) rows.push({ a: models[i], b: models[j], r, series, eq, re, fx, k: series.length });
+        const r = compare(pool, models[i], models[j], f);
+        if (r) rows.push({ a: models[i], b: models[j], r });
       }
     }
-    rows.forEach((x) => {
-      x.flip = signFlipP(x.series.map((y) => y.d));
-      x.p = st.test === 'flip' ? x.flip : x.r.p;
-      const sgn0 = Math.sign(x.r.mean) || 1;
-      const nz = x.series.filter((y) => y.d !== 0);
-      x.agree = nz.filter((y) => Math.sign(y.d) === sgn0).length;
-      x.ties = x.series.length - nz.length;
-      x.signp = signP(x.agree, nz.length);
-    });
-    const adj = adjust(rows.map((x) => x.p), st.corr);
-    rows.forEach((x, i) => { x.adj = adj[i]; });
-    rows.sort((x, y) => (x.p == null ? 2 : x.p) - (y.p == null ? 2 : y.p) || x.r.p - y.r.p);
+    rows.sort((x, y) => (x.r.p == null ? 2 : x.r.p) - (y.r.p == null ? 2 : y.r.p));
 
     const sgn = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
     const pf = (v) => (v == null ? '—' : v < 0.001 ? '<0.001' : v.toFixed(3));
-    const win = (x) => (x.adj != null && x.adj < 0.05);
-    const nWin = rows.filter(win).length;
-    const thin = rows.filter((x) => x.r.k < 5).length;
-
-    // which end of this dimension is the good one, so a sign reads as a verdict
+    const win = (x) => x.r.p != null && x.r.p < 0.05;
     const worse = (x) => (d.higher_better ? (x.r.mean < 0 ? x.b : x.a) : (x.r.mean > 0 ? x.b : x.a));
-
     const key = (x) => `${x.b}|${x.a}`;
+
     const body = rows.map((x) => `<tr class="clickable ${key(x) === st.pair ? 'onrow' : ''} ${win(x) ? '' : 'faint'}" data-pair="${esc(key(x))}">
       <td class="model">${brk(x.b)} <span class="meta">minus</span> ${brk(x.a)}</td>
-      <td class="num">${x.k}${x.k < 5 ? '<span class="meta thin">?</span>' : ''}</td>
-      <td class="num ${x.signp != null && x.signp < 0.05 ? 'okc' : ''}" data-tip="${esc(
-        `${x.agree} of ${x.k - x.ties} seeds came out the same way`
-        + `\nsign test p = ${x.signp == null ? '—' : x.signp.toFixed(3)} — treat each seed as a coin flip; nothing is estimated from the data`
-        + (x.re ? `\nτ² = ${x.re.tau2.toFixed(2)} — how much the difference varies between scenarios beyond epoch noise`
-                + (x.re.tau2 === 0 ? '\nτ² = 0: the seeds agree to within epoch noise, the strongest agreement this design can show' : '') : ''))}">${
-        x.agree}/${x.k - x.ties}${x.re && x.re.tau2 === 0 ? '<span class="okc"> ✓</span>' : ''}</td>
+      <td class="num">${x.r.n}<span class="meta">/${x.r.k}</span></td>
       <td class="num"><b>${sgn(x.r.mean)}</b></td>
       <td class="num">${x.r.half == null ? '—' : `${sgn(x.r.mean - x.r.half)} to ${sgn(x.r.mean + x.r.half)}`}</td>
-      <td class="num">${x.r.t == null || !isFinite(x.r.t) ? '—' : x.r.t.toFixed(2)}</td>
+      <td class="num">${x.r.t == null ? '—' : x.r.t.toFixed(2)}</td>
       <td class="num">${x.r.df}</td>
-      <td class="num${st.test === 't' ? '' : ' meta'}">${pf(x.r.p)}</td>
-      <td class="num${st.test === 'flip' ? '' : ' meta'}" data-tip="${esc(x.flip != null && x.flip <= flipFloor(x.r.k) + 1e-12
-        ? `this is the floor: with ${x.r.k} seeds no sign-flip result can come in under ${flipFloor(x.r.k).toFixed(3)}, so the test is saturated and the effect may be larger than the p suggests`
-        : `exact, over all ${Math.pow(2, x.r.k)} sign assignments of ${x.r.k} seeds`)}">${pf(x.flip)}${
-        x.flip != null && x.flip <= flipFloor(x.r.k) + 1e-12 ? '<span class="meta thin">floor</span>' : ''}</td>
-      <td class="num">${st.corr === 'none' ? '—' : pf(x.adj)}</td>
+      <td class="num">${pf(x.r.p)}</td>
       <td class="${win(x) ? 'okc' : ''}">${win(x) ? `${brk(worse(x))} is worse` : 'no difference shown'}</td>
     </tr>`).join('');
 
     const th = (l, tip) => `<th class="num" data-tip="${esc(tip)}">${l}</th>`;
+    const nWin = rows.filter(win).length;
     $('#view').innerHTML = `${controls}
       <div class="tiles">
-        <div class="tile"><div class="k">pairs tested</div><div class="v">${rows.length}</div><div class="d">${models.length} models${st.scope ? ` · ${esc(themeTitle(st.scope))} only` : ''}</div></div>
-        <div class="tile"><div class="k">differences found</div><div class="v">${nWin}</div><div class="d">${st.corr === 'none' ? 'raw p < 0.05, uncorrected' : `${st.corr === 'holm' ? 'Holm' : 'Bonferroni'}-adjusted p &lt; 0.05`}</div></div>
+        <div class="tile"><div class="k">pairs</div><div class="v">${rows.length}</div><div class="d">${models.length} models${st.scope ? ` · ${esc(themeTitle(st.scope))} only` : ''}</div></div>
+        <div class="tile"><div class="k">differences at p &lt; 0.05</div><div class="v">${nWin}</div><div class="d">of ${rows.length} pairs</div></div>
         <div class="tile"><div class="k">dimension</div><div class="v" style="font-size:18px">${esc(dimShort(d.id))}</div><div class="d">${dirLabel(d)}</div></div>
-        <div class="tile"><div class="k">false winners expected</div><div class="v">${(rows.length * 0.05).toFixed(1)}</div><div class="d">at raw p &lt; 0.05, if no model differed</div></div>
+        <div class="tile"><div class="k">audits in scope</div><div class="v">${pool.filter((t) => typeof f(t) === 'number').length}</div><div class="d">across ${new Set(pool.map((t) => t.seed)).size} seeds</div></div>
       </div>
-      ${st.wt === 'fixed' ? `<div class="banner"><b>Reading these seeds as the benchmark.</b>
-        Every audit counts as a data point and the intervals are about 40% narrower, which is valid —
-        but the claim narrows with them: <b>"on these ${rows.length ? rows[0].k : ''} scenarios"</b>, not
-        "on this kind of behaviour". A difference here need not survive on seeds you have not written yet.
-        Where a pair's τ² is 0 the two readings agree; where it is large they do not.
-        ${rows.filter((x) => x.fx && x.fx.p < 0.05).length} pairs clear 5% this way against
-        ${rows.filter((x) => x.eq && x.eq.p < 0.05).length} the other.</div>` : ''}
-      <div class="banner plain"><b>The short version:</b> read the <b>agree</b> column. If the two models were the same,
-        each seed is a coin flip, so ${rows.length && rows[0].k ? `at ${rows[0].k} seeds you need ${rows[0].k}/${rows[0].k} (p ${(signP(rows[0].k, rows[0].k) || 0).toFixed(3)})${rows[0].k >= 9 ? ` or ${rows[0].k - 1}/${rows[0].k} (p ${(signP(rows[0].k - 1, rows[0].k) || 0).toFixed(3)})` : ''}` : 'you need every seed'} to clear 5%.
-        That test assumes nothing and no single odd seed can move it. Everything to its right is the same question asked more precisely, using how big each difference was.</div>
-      <h2>Paired comparison<span class="hint">one row per pair · sorted by p · matched on the seeds both models were audited on</span></h2>
+      <h2>Model vs model<span class="hint">one row per pair · sorted by p · click a row to see it seed by seed</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr><th>pair</th>
-        ${th('seeds', 'seeds both models were audited on — this is the sample size, not the leaf count')}
-        ${th('agree', 'how many of those seeds point the same way — the simple test, green when a coin would do this less than 5% of the time · ✓ marks τ² = 0, no scenario-to-scenario variation beyond epoch noise')}
-        ${th('Δ', 'mean of the per-seed differences')}
-        ${th('95% CI', 'confidence interval for that mean')}
+        ${th('audits', 'audits behind the comparison, and the seeds they span')}
+        ${th('Δ', 'difference in mean score — positive means the first model scored higher')}
+        ${th('95% CI', 'confidence interval for that difference')}
         ${th('t', 'the difference divided by its standard error')}
-        ${th('df', 'seeds minus one')}
-        ${th('p (t)', 'two-sided paired t-test of the per-seed differences against zero')}
-        ${th('p (flip)', 'exact sign-flip test — assumes nothing about the shape of the differences, but can only return multiples of 1/2^seeds')}
-        ${th('p adj', `the ${st.test === 'flip' ? 'sign-flip' : 't'} p after accounting for all pairs tested here`)}
+        ${th('df', 'degrees of freedom — audits, less one per seed per model')}
+        ${th('p', 'two-sided t-test that the difference is zero')}
         <th>verdict</th></tr></thead><tbody>${body}</tbody></table></div>
-      <div class="legend">Both tests run on per-seed differences: within each seed both models are averaged over their epochs, and the test runs on those ${rows.length ? rows[0].r.k : 0}-or-so numbers. The <b>${st.test === 'flip' ? 'sign-flip' : 't'}</b> column drives the verdict; the other is there as a check, and a wide gap between them is a reason to trust the sign-flip.${
-        thin ? ` <b>?</b> marks ${thin} pair${thin > 1 ? 's' : ''} resting on fewer than 5 shared seeds, where the interval is too unstable to lean on.` : ''} A seed only one model was audited on is dropped — a refused audit leaves no difference to measure.</div>
+      <div class="legend">Each audit is a data point. The two models are compared within each seed and averaged, so a seed one model is missing cannot tilt the result.
+        Results describe this seed set${rows.length > 1 ? `, and with ${rows.length} pairs on screen about ${(rows.length * 0.05).toFixed(1)} would reach p &lt; 0.05 by chance alone — pick the pair before reading its p` : ''}.</div>
       ${(() => {
         const x = rows.find((y) => key(y) === st.pair);
-        if (!x) return '<div class="legend">Click any row to break it down seed by seed — the fastest way to see whether a difference is one scenario or all of them.</div>';
+        if (!x) return '';
         const se = (y) => Math.sqrt(y.v);
-        const wid = Math.max(...x.series.map((y) => Math.abs(y.d) + 1.96 * se(y)), 0.5);
-        return `<h2>${esc(x.b)} minus ${esc(x.a)}, seed by seed<span class="hint">each seed's own difference, with the interval its epochs support</span></h2>
+        const wid = Math.max(...x.r.series.map((y) => Math.abs(y.d) + 1.96 * se(y)), 0.5);
+        return `<h2>${esc(x.b)} minus ${esc(x.a)}, seed by seed<span class="hint">each seed's own difference, with the interval its audits support</span></h2>
         <div class="scroll-x"><table class="list arith"><thead><tr><th>seed</th>
-          <th class="num">Δ this seed</th><th class="num">± from its epochs</th><th class="num">epochs</th><th>where it sits</th></tr></thead><tbody>
-          ${x.series.slice().sort((m, n) => n.d - m.d).map((y) => {
+          <th class="num">Δ this seed</th><th class="num">±</th><th class="num">audits</th><th>where it sits</th></tr></thead><tbody>
+          ${x.r.series.slice().sort((m, n) => n.d - m.d).map((y) => {
             const h = 1.96 * se(y), pc = (v) => `${(50 + 50 * v / wid).toFixed(1)}%`;
             return `<tr><td class="model">${esc(y.seed)}</td>
-              <td class="num"><b>${y.d >= 0 ? '+' : '−'}${Math.abs(y.d).toFixed(2)}</b></td>
+              <td class="num"><b>${sgn(y.d)}</b></td>
               <td class="num">${se(y) ? `±${h.toFixed(2)}` : '—'}</td>
               <td class="num">${y.nA}/${y.nB}</td>
               <td class="forest"><span class="zero"></span><span class="bar" style="left:${pc(Math.min(y.d - h, y.d))};right:calc(100% - ${pc(Math.max(y.d + h, y.d))})"></span><span class="dot" style="left:${pc(y.d)}"></span></td></tr>`;
           }).join('')}
         </tbody></table></div>
-        <div class="legend">Pooled: <b>${x.r.mean >= 0 ? '+' : '−'}${Math.abs(x.r.mean).toFixed(2)}</b> ${x.r.half != null ? `±${x.r.half.toFixed(2)}` : ''} · ${x.agree} of ${x.k} seeds point the same way${
-          x.re ? ` · τ² = ${x.re.tau2.toFixed(2)}${x.re.tau2 === 0 ? ' — the seeds agree to within epoch noise, so the difference looks constant across scenarios' : ' — the difference genuinely varies by scenario, which is why the pooled interval is wide'}` : ''}.
-          Same difference, three error terms: over seeds p ${pf(x.eq.p)}; precision-weighted p ${x.re ? pf(x.re.p) : '—'}; over epochs with these seeds fixed p ${x.fx ? pf(x.fx.p) : '—'}${
-            x.fx && x.eq.p != null && x.fx.p != null && x.eq.p > 0.05 && x.fx.p < 0.05 ? ' — the last one disagrees, which means this difference rests on the particular seeds' : ''}.</div>`;
-      })()}
-      <details class="box"><summary>What this test assumes, and what it cannot tell you</summary><div class="body">Each seed contributes one difference, and those differences are treated as independent draws from one distribution — reasonable, since seeds were written separately. The <b>seed</b> is the unit because both models were given the same seeds, while the epochs inside one are re-runs of a single scenario; testing at the leaf level instead treats those re-runs as fresh evidence and shrinks p by more than tenfold. Analysing leaves is fine if the standard error is clustered on seed, but that lands back on these same numbers, and under ten clusters is exactly where cluster-robust errors are least trustworthy. On the two tests: the paired t uses how big each difference is and assumes the differences are roughly symmetric, which under ten seeds cannot be checked; the sign-flip test assumes nothing but is discrete, so at ${rows.length ? rows[0].r.k : 6} seeds nothing can come in under ${rows.length && flipFloor(rows[0].r.k) != null ? flipFloor(rows[0].r.k).toFixed(3) : '—'} however large the effect — a rank test such as Wilcoxon has the same floor and additionally throws the sizes away. A p-value answers "how surprising is a difference this large if the two models were identical", not "how big is the difference" — read the Δ and its interval for that. Non-significant never means equal: at this sample size a real half-point gap would go undetected most of the time. And with ${rows.length} pairs on screen the correction is doing real work — turn it off only for a pair you chose before looking.</div></details>`;
+        <div class="legend">Pooled: <b>${sgn(x.r.mean)}</b>${x.r.half != null ? ` ±${x.r.half.toFixed(2)}` : ''}, p ${pf(x.r.p)} ·
+          ${x.r.series.filter((y) => Math.sign(y.d) === (Math.sign(x.r.mean) || 1)).length} of ${x.r.k} seeds point the same way.</div>`;
+      })()}`;
   }
+
 
   // ------------------------------------------------------------ overview ----
   function renderOverview() {
@@ -1537,7 +1357,7 @@
     if (prow) {
       const cur = new URLSearchParams(location.hash.split('?')[1] || '');
       const q = new URLSearchParams();
-      ['dim', 'scope', 'corr', 'test', 'wt'].forEach((k) => { if (cur.get(k)) q.set(k, cur.get(k)); });
+      ['dim', 'scope'].forEach((k) => { if (cur.get(k)) q.set(k, cur.get(k)); });
       if (cur.get('pair') !== prow.dataset.pair) q.set('pair', prow.dataset.pair);   // click again to close
       location.hash = `#/stats${q.toString() ? `?${q}` : ''}`;
       return;
@@ -1551,7 +1371,7 @@
     if (stSel) {
       const cur = new URLSearchParams(location.hash.split('?')[1] || '');
       const q = new URLSearchParams();
-      ['dim', 'scope', 'corr', 'test', 'wt', 'pair'].forEach((k) => {
+      ['dim', 'scope', 'pair'].forEach((k) => {
         const v = k === stSel.dataset.st ? stSel.value : (cur.get(k) || '');
         if (v) q.set(k, v);
       });
