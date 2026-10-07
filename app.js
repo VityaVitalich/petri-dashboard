@@ -751,6 +751,65 @@
     return { N, rows, resid: { ss: rssFull, df: dfE, ms: mse }, ssTot, adj, nModels: ms.length, nSeeds: ss_.length, nCells };
   }
 
+  // ---- Tukey HSD: the studentized range distribution, by numerical integration.
+  // P(Q < q; k, df) = ∫ f_s(s) · k ∫ φ(z) [Φ(z) − Φ(z − q s)]^(k−1) dz ds, where s = √(χ²_df / df).
+  const normCdf = (x) => {
+    const t = 1 / (1 + 0.2316419 * Math.abs(x));
+    const d = 0.3989422804014327 * Math.exp(-x * x / 2);
+    const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    return x >= 0 ? 1 - p : p;
+  };
+  const simpson = (fn, a, b, n) => {
+    const h = (b - a) / n;
+    let acc = fn(a) + fn(b);
+    for (let i = 1; i < n; i++) acc += fn(a + i * h) * (i % 2 ? 4 : 2);
+    return acc * h / 3;
+  };
+  function prange(w, k) {   // P(range of k standard normals < w)
+    if (w <= 0) return 0;
+    const inner = (z) => Math.exp(-z * z / 2) * 0.3989422804014327 * Math.pow(Math.max(0, normCdf(z) - normCdf(z - w)), k - 1);
+    return Math.min(1, k * simpson(inner, -8, 8 + w, 240));
+  }
+  function ptukey(q, k, df) {
+    if (q <= 0) return 0;
+    if (df > 2000) return prange(q, k);
+    const sd = 1 / Math.sqrt(2 * df);
+    const lo = Math.max(1e-6, 1 - 9 * sd), hi = 1 + 9 * sd;
+    const logc = (df / 2) * Math.log(df) - lgamma(df / 2) - (df / 2 - 1) * Math.log(2);
+    const fs = (s) => Math.exp(logc + (df - 1) * Math.log(s) - df * s * s / 2);
+    return Math.min(1, simpson((s) => fs(s) * prange(q * s, k), lo, hi, 80));
+  }
+  function qtukey(p, k, df) {   // the p-quantile, by bisection
+    let lo = 0, hi = 20;
+    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (ptukey(mid, k, df) < p) lo = mid; else hi = mid; }
+    return (lo + hi) / 2;
+  }
+  // Compact letter display (Piepho's insert-absorb): models that share a letter are not
+  // significantly different. `order` is best first; letters are handed out in that order.
+  function cld(order, sigPair) {
+    let groups = [new Set(order)];
+    for (let i = 0; i < order.length; i++) {
+      for (let j = i + 1; j < order.length; j++) {
+        if (!sigPair(order[i], order[j])) continue;
+        const next = [];
+        groups.forEach((g) => {
+          if (g.has(order[i]) && g.has(order[j])) {
+            const a = new Set(g); a.delete(order[i]);
+            const b = new Set(g); b.delete(order[j]);
+            next.push(a, b);
+          } else next.push(g);
+        });
+        groups = next.filter((g, gi) => g.size && !next.some((h, hi) => hi !== gi && h.size >= g.size
+          && [...g].every((x) => h.has(x)) && (h.size > g.size || hi < gi)));
+      }
+    }
+    const pos = (m) => order.indexOf(m);
+    groups.sort((g, h) => Math.min(...[...g].map(pos)) - Math.min(...[...h].map(pos)));
+    const L = new Map(order.map((m) => [m, '']));
+    groups.forEach((g, gi) => g.forEach((m) => L.set(m, L.get(m) + String.fromCharCode(97 + (gi % 26)))));
+    return L;
+  }
+
   function renderAnova(query) {
     const ts = filtered();
     const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '' };
@@ -792,14 +851,52 @@
         model gap describes every seed. The F-tests assume roughly normal residuals with equal spread; the scores are 1–10
         rubric values and often bimodal, so treat p-values near 0.05 as borderline.</span></div>`;
     const adj = A.adj.slice().sort((x, y) => (hiBetter ? y.adj - x.adj : x.adj - y.adj));
-    const means = `<h2>Model means adjusted for seed<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first</span></h2>
+    // Tukey-Kramer on the adjusted means: every pair at once, family-wise 95%.
+    const K = adj.length, dfE = A.resid.df, mse = A.resid.ms;
+    const qcrit = qtukey(0.95, K, dfE);
+    const byM = new Map(adj.map((x) => [x.m, x]));
+    const pairs = [];
+    for (let i = 0; i < K; i++) {
+      for (let j = i + 1; j < K; j++) {
+        const a = adj[i], b = adj[j];
+        const diff = hiBetter ? a.adj - b.adj : b.adj - a.adj;   // gap in favour of the better-ranked model, in score points
+        const se = Math.sqrt(mse / 2 * (1 / a.n + 1 / b.n));
+        const p = 1 - ptukey(Math.abs(diff) / se, K, dfE);
+        pairs.push({ a: a.m, b: b.m, diff, lo: diff - qcrit * se, hi: diff + qcrit * se, p, hsd: qcrit * se });
+      }
+    }
+    const pk = (x, y) => (x < y ? `${x}\u0000${y}` : `${y}\u0000${x}`);
+    const pmap = new Map(pairs.map((r) => [pk(r.a, r.b), r]));
+    const sigP = (x, y) => pmap.get(pk(x, y)).p < 0.05;
+    const letters = cld(adj.map((x) => x.m), sigP);
+    const nSig = pairs.filter((r) => r.p < 0.05).length;
+    const typHsd = mean(pairs.map((r) => r.hsd));
+    const means = `<h2>Model means adjusted for seed<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first · models sharing a letter are not significantly different (Tukey, family-wise 95%)</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr><th class="num">#</th><th>model</th>
         <th class="num" data-tip="additive fit (model + seed) averaged over the seeds with equal weight, so a model that is missing a seed or has extra epochs on one is not tilted by it">adjusted mean</th>
+        <th data-tip="compact letter display: two models that share at least one letter cannot be told apart at family-wise 95% (Tukey-Kramer)">group</th>
         <th class="num">raw mean</th><th class="num">audits</th><th class="num">seeds</th></tr></thead><tbody>
       ${adj.map((x, i) => `<tr><td class="num rk">${i + 1}</td><td class="model">${brk(x.m)}</td><td class="num"><b>${x.adj.toFixed(2)}</b></td>
+        <td><code>${esc(letters.get(x.m))}</code></td>
         <td class="num">${x.raw.toFixed(2)}</td><td class="num">${x.n}</td><td class="num">${x.k}${x.k < A.nSeeds ? ` <span class="meta">of ${A.nSeeds}</span>` : ''}</td></tr>`).join('')}
-      </tbody></table></div>`;
-    $('#view').innerHTML = `${controls}${table}${means}`;
+      </tbody></table></div>
+      <div class="legend"><span>Two models count as different only if their adjusted means are further apart than Tukey's threshold, which here is
+        about <b>${typHsd.toFixed(2)}</b> points (q = ${qcrit.toFixed(3)} for ${K} models, ${dfE} residual df; wider for models with fewer audits).
+        ${nSig} of ${pairs.length} pairs clear it. The threshold controls the chance of even one false "different" across all
+        ${pairs.length} pairs at 5%. It uses the residual noise as the yardstick, so when the model × seed interaction is
+        significant an overall verdict still averages over seeds that disagree; the per-theme view is the more honest ranking.
+        The standard error is the Tukey-Kramer one (residual mean square and each model's audit count), an approximation for
+        seed-adjusted means when a model is missing seeds.</span></div>`;
+    const pairsSorted = pairs.slice().sort((x, y) => x.p - y.p || Math.abs(y.diff) - Math.abs(x.diff));
+    const pairTable = `<h2>All pairs<span class="hint">Tukey-Kramer · gap = how much better the first model scores, in points (positive = first is better) · simultaneous 95% CI</span></h2>
+      <details class="box"><summary>${pairs.length} pairs · ${nSig} significantly different</summary><div class="body nw">
+      <div class="scroll-x"><table class="list arith"><thead><tr><th>pair</th><th class="num">gap</th><th class="num">95% CI</th><th class="num">p (adjusted)</th></tr></thead><tbody>
+      ${pairsSorted.map((r) => `<tr class="${r.p < 0.05 ? '' : 'faint'}"><td class="model">${brk(r.a)} <span class="meta">vs</span> ${brk(r.b)}</td>
+        <td class="num"><b>${r.diff >= 0 ? '+' : '−'}${Math.abs(r.diff).toFixed(2)}</b></td>
+        <td class="num">${r.lo.toFixed(2)} to ${r.hi.toFixed(2)}</td>
+        <td class="num ${r.p < 0.05 ? 'okc' : ''}">${pf(r.p)}</td></tr>`).join('')}
+      </tbody></table></div></div></details>`;
+    $('#view').innerHTML = `${controls}${table}${means}${pairTable}`;
   }
 
   // Which differences are real -> a matrix, one cell per pair. Click a cell for the
