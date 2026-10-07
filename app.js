@@ -812,7 +812,7 @@
 
   function renderAnova(query) {
     const ts = filtered();
-    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '' };
+    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '', corr: query.get('corr') || 'fdr' };
     const d = dimById(st.dim);
     const f = (t) => dimVal(t, d);
     const hiBetter = !!d.higher_better && !d.inverted;
@@ -825,6 +825,8 @@
       ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to analyse')}
       ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope,
             'restrict to one theme')}
+      ${sel('corr', 'pairwise correction', [{ v: 'fdr', l: 'FDR (Benjamini-Hochberg)' }, { v: 'tukey', l: 'Tukey (all pairs, strict)' }], st.corr,
+            'FDR: of the pairs called different, about 5% may be wrong; suits a preselected set of models. Tukey: the chance of even one wrong call across all pairs stays at 5%; stricter.')}
     </div>`;
     const obs = pool.map((t) => ({ m: t.alias, s: t.seed, y: f(t) })).filter((o) => typeof o.y === 'number');
     const A = obs.length ? anova2(obs) : null;
@@ -860,10 +862,21 @@
       for (let j = i + 1; j < K; j++) {
         const a = adj[i], b = adj[j];
         const diff = hiBetter ? a.adj - b.adj : b.adj - a.adj;   // gap in favour of the better-ranked model, in score points
-        const se = Math.sqrt(mse / 2 * (1 / a.n + 1 / b.n));
-        const p = 1 - ptukey(Math.abs(diff) / se, K, dfE);
-        pairs.push({ a: a.m, b: b.m, diff, lo: diff - qcrit * se, hi: diff + qcrit * se, p, hsd: qcrit * se });
+        const se = Math.sqrt(mse / 2 * (1 / a.n + 1 / b.n));   // Tukey's scale; the t-test SE is se·√2
+        if (st.corr === 'tukey') {
+          const p = 1 - ptukey(Math.abs(diff) / se, K, dfE);
+          pairs.push({ a: a.m, b: b.m, diff, lo: diff - qcrit * se, hi: diff + qcrit * se, p, hsd: qcrit * se });
+        } else {
+          const seT = se * Math.SQRT2, tc = t95(dfE);
+          const praw = tPval(diff / seT, dfE);
+          pairs.push({ a: a.m, b: b.m, diff, lo: diff - tc * seT, hi: diff + tc * seT, p: praw, praw, hsd: tc * seT });
+        }
       }
+    }
+    if (st.corr !== 'tukey') {   // Benjamini-Hochberg step-up on the raw pairwise p-values
+      const o = pairs.slice().sort((x, y) => x.praw - y.praw), m = o.length;
+      let run = 1;
+      for (let i = m - 1; i >= 0; i--) { run = Math.min(run, o[i].praw * m / (i + 1)); o[i].p = Math.min(1, run); }
     }
     const pk = (x, y) => (x < y ? `${x}\u0000${y}` : `${y}\u0000${x}`);
     const pmap = new Map(pairs.map((r) => [pk(r.a, r.b), r]));
@@ -871,24 +884,30 @@
     const letters = cld(adj.map((x) => x.m), sigP);
     const nSig = pairs.filter((r) => r.p < 0.05).length;
     const typHsd = mean(pairs.map((r) => r.hsd));
-    const means = `<h2>Model means adjusted for seed<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first · models sharing a letter are not significantly different (Tukey, family-wise 95%)</span></h2>
+    const means = `<h2>Model means adjusted for seed<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first · models sharing a letter are not significantly different (${st.corr === 'tukey' ? 'Tukey, family-wise 95%' : 'FDR 5%, Benjamini-Hochberg'})</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr><th class="num">#</th><th>model</th>
         <th class="num" data-tip="additive fit (model + seed) averaged over the seeds with equal weight, so a model that is missing a seed or has extra epochs on one is not tilted by it">adjusted mean</th>
-        <th data-tip="compact letter display: two models that share at least one letter cannot be told apart at family-wise 95% (Tukey-Kramer)">group</th>
+        <th data-tip="compact letter display: two models that share at least one letter are not significantly different under the selected correction">group</th>
         <th class="num">raw mean</th><th class="num">audits</th><th class="num">seeds</th></tr></thead><tbody>
       ${adj.map((x, i) => `<tr><td class="num rk">${i + 1}</td><td class="model">${brk(x.m)}</td><td class="num"><b>${x.adj.toFixed(2)}</b></td>
         <td><code>${esc(letters.get(x.m))}</code></td>
         <td class="num">${x.raw.toFixed(2)}</td><td class="num">${x.n}</td><td class="num">${x.k}${x.k < A.nSeeds ? ` <span class="meta">of ${A.nSeeds}</span>` : ''}</td></tr>`).join('')}
       </tbody></table></div>
-      <div class="legend"><span>Two models count as different only if their adjusted means are further apart than Tukey's threshold, which here is
-        about <b>${typHsd.toFixed(2)}</b> points (q = ${qcrit.toFixed(3)} for ${K} models, ${dfE} residual df; wider for models with fewer audits).
-        ${nSig} of ${pairs.length} pairs clear it. The threshold controls the chance of even one false "different" across all
-        ${pairs.length} pairs at 5%. It uses the residual noise as the yardstick, so when the model × seed interaction is
-        significant an overall verdict still averages over seeds that disagree; the per-theme view is the more honest ranking.
-        The standard error is the Tukey-Kramer one (residual mean square and each model's audit count), an approximation for
+      <div class="legend"><span>${st.corr === 'tukey'
+        ? `Tukey: two models count as different only if their adjusted means are further apart than about <b>${typHsd.toFixed(2)}</b>
+          points (q = ${qcrit.toFixed(3)} for ${K} models, ${dfE} residual df; wider for models with fewer audits). This keeps the
+          chance of even one false "different" across all ${pairs.length} pairs at 5%, which is strict when the models were
+          preselected.`
+        : `FDR (Benjamini-Hochberg): each pair gets an ordinary t-test (unadjusted, it would need a gap of about
+          <b>${typHsd.toFixed(2)}</b> points), then the p-values are adjusted so that, of the pairs called different, about 5% may be
+          wrong. It is softer than Tukey and suits a set of models you picked before looking; the CIs are per-pair 95%, not
+          simultaneous.`}
+        ${nSig} of ${pairs.length} pairs are different. The yardstick is the residual noise, so when the model × seed interaction
+        is significant an overall verdict still averages over seeds that disagree; the per-theme view is the more honest
+        ranking. The standard error uses the residual mean square and each model's audit count, an approximation for
         seed-adjusted means when a model is missing seeds.</span></div>`;
     const pairsSorted = pairs.slice().sort((x, y) => x.p - y.p || Math.abs(y.diff) - Math.abs(x.diff));
-    const pairTable = `<h2>All pairs<span class="hint">Tukey-Kramer · gap = how much better the first model scores, in points (positive = first is better) · simultaneous 95% CI</span></h2>
+    const pairTable = `<h2>All pairs<span class="hint">${st.corr === 'tukey' ? 'Tukey-Kramer · simultaneous 95% CI' : 'Benjamini-Hochberg FDR · per-pair 95% CI'} · gap = how much better the first model scores, in points (positive = first is better)</span></h2>
       <details class="box"><summary>${pairs.length} pairs · ${nSig} significantly different</summary><div class="body nw">
       <div class="scroll-x"><table class="list arith"><thead><tr><th>pair</th><th class="num">gap</th><th class="num">95% CI</th><th class="num">p (adjusted)</th></tr></thead><tbody>
       ${pairsSorted.map((r) => `<tr class="${r.p < 0.05 ? '' : 'faint'}"><td class="model">${brk(r.a)} <span class="meta">vs</span> ${brk(r.b)}</td>
@@ -1626,7 +1645,7 @@
     if (stSel) {
       const cur = new URLSearchParams(location.hash.split('?')[1] || '');
       const q = new URLSearchParams();
-      ['dim', 'scope', 'pair'].forEach((k) => {
+      ['dim', 'scope', 'pair', 'corr'].forEach((k) => {
         const v = k === stSel.dataset.st ? stSel.value : (cur.get(k) || '');
         if (v) q.set(k, v);
       });
