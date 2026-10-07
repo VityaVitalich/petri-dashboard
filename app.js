@@ -697,6 +697,111 @@
 
   // ---------------------------------------------------------------- stats ----
   // Two questions, two forms. Which model is better -> a ranking with intervals.
+  // Two-way ANOVA, score ~ model + seed + model:seed, on the filtered audits. Type II
+  // sums of squares from nested residual sums of squares, so unbalanced cells (missing
+  // epochs, a seed a model never got) are handled. The additive fit is solved by
+  // backfitting instead of a matrix solve, which also copes with empty model x seed cells.
+  function anova2(obs) {
+    const N = obs.length;
+    const ms = [...new Set(obs.map((o) => o.m))], ss_ = [...new Set(obs.map((o) => o.s))];
+    const cellKey = (o) => `${o.m}\u0000${o.s}`;
+    const groupMean = (key) => {
+      const g = new Map();
+      obs.forEach((o) => { const k = key(o); const c = g.get(k) || [0, 0]; c[0] += o.y; c[1] += 1; g.set(k, c); });
+      return new Map([...g].map(([k, [s, n]]) => [k, s / n]));
+    };
+    const rss = (key) => { const g = groupMean(key); return obs.reduce((a, o) => a + (o.y - g.get(key(o))) ** 2, 0); };
+    const mu0 = mean(obs.map((o) => o.y));
+    const ssTot = obs.reduce((a, o) => a + (o.y - mu0) ** 2, 0);
+    const rssModel = rss((o) => o.m), rssSeed = rss((o) => o.s), rssFull = rss(cellKey);
+    // additive fit: y = mu + a[model] + b[seed], b centred over seeds (unweighted)
+    const a = new Map(ms.map((m) => [m, 0])), b = new Map(ss_.map((s) => [s, 0]));
+    let mu = mu0;
+    for (let it = 0; it < 1000; it++) {
+      let delta = 0;
+      const upd = (eff, keyOf, other) => {
+        const acc = new Map();
+        obs.forEach((o) => { const k = keyOf(o); const c = acc.get(k) || [0, 0]; c[0] += o.y - mu - other(o); c[1] += 1; acc.set(k, c); });
+        acc.forEach(([s, n], k) => { const v = s / n; delta = Math.max(delta, Math.abs(v - eff.get(k))); eff.set(k, v); });
+      };
+      upd(a, (o) => o.m, (o) => b.get(o.s));
+      upd(b, (o) => o.s, (o) => a.get(o.m));
+      const bm = mean([...b.values()]);
+      b.forEach((v, k) => b.set(k, v - bm)); mu += bm;
+      if (delta < 1e-11) break;
+    }
+    const rssAdd = obs.reduce((acc, o) => acc + (o.y - mu - a.get(o.m) - b.get(o.s)) ** 2, 0);
+    const nCells = new Set(obs.map(cellKey)).size;
+    const dfE = N - nCells, mse = dfE > 0 ? rssFull / dfE : null;
+    const row = (name, ss, df) => {
+      const F = mse && df > 0 ? (ss / df) / mse : null;
+      const p = F == null ? null : F <= 0 ? 1 : ibeta(dfE / 2, df / 2, dfE / (dfE + df * F));
+      return { name, ss, df, ms: df > 0 ? ss / df : null, F, p, eta: ss + rssFull > 0 ? ss / (ss + rssFull) : null };
+    };
+    const rows = [
+      row('model', Math.max(0, rssSeed - rssAdd), ms.length - 1),
+      row('seed', Math.max(0, rssModel - rssAdd), ss_.length - 1),
+      row('model × seed', Math.max(0, rssAdd - rssFull), nCells - ms.length - ss_.length + 1),
+    ];
+    // a model's mean adjusted for seed: the additive fit averaged over seeds with equal weight
+    const adj = ms.map((m) => {
+      const ys = obs.filter((o) => o.m === m);
+      return { m, adj: mu + a.get(m), raw: mean(ys.map((o) => o.y)), n: ys.length, k: new Set(ys.map((o) => o.s)).size };
+    });
+    return { N, rows, resid: { ss: rssFull, df: dfE, ms: mse }, ssTot, adj, nModels: ms.length, nSeeds: ss_.length, nCells };
+  }
+
+  function renderAnova(query) {
+    const ts = filtered();
+    const st = { dim: query.get('dim') || CGP, scope: query.get('scope') || '' };
+    const d = dimById(st.dim);
+    const f = (t) => dimVal(t, d);
+    const hiBetter = !!d.higher_better && !d.inverted;
+    const ths = [...new Set(ts.map((t) => t.theme).filter(Boolean))]
+      .sort((x, y) => ts.filter((t) => t.theme === y).length - ts.filter((t) => t.theme === x).length);
+    const pool = st.scope ? ts.filter((t) => t.theme === st.scope) : ts;
+    const sel = (key, label, opts, val, tip) => `<label class="ctl" data-tip="${esc(tip)}">${label}
+      <select data-st="${key}">${opts.map((o) => `<option value="${esc(o.v)}"${o.v === val ? ' selected' : ''}>${esc(o.l)}</option>`).join('')}</select></label>`;
+    const controls = `<div class="ctls">
+      ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to analyse')}
+      ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope,
+            'restrict to one theme')}
+    </div>`;
+    const obs = pool.map((t) => ({ m: t.alias, s: t.seed, y: f(t) })).filter((o) => typeof o.y === 'number');
+    const A = obs.length ? anova2(obs) : null;
+    if (!A || A.nModels < 2 || A.nSeeds < 2 || !(A.resid.df > 0)) {
+      return void ($('#view').innerHTML = controls
+        + '<div class="empty">Select at least two models and two seeds with repeated audits in the filter bar above.</div>');
+    }
+    const pf = (v) => (v == null ? '—' : v < 0.001 ? '<0.001' : v.toFixed(3));
+    const nf = (v, k = 2) => (v == null ? '—' : v.toFixed(k));
+    const table = `<h2>Two-way ANOVA<span class="hint">${esc(dimShort(d.id))} ~ model + seed + model × seed · Type II sums of squares · ${A.N} audits, ${A.nModels} models, ${A.nSeeds} seeds, ${A.nCells} model×seed cells</span></h2>
+      <div class="scroll-x"><table class="list arith"><thead><tr>
+        <th>source</th><th class="num">SS</th><th class="num">df</th><th class="num">mean square</th><th class="num">F</th><th class="num">p</th>
+        <th class="num" data-tip="partial eta squared: SS / (SS + residual SS), the share of the variance left after the other terms that this term explains">partial η²</th>
+      </tr></thead><tbody>
+      ${A.rows.map((r) => `<tr><td class="model">${esc(r.name)}</td><td class="num">${nf(r.ss)}</td><td class="num">${r.df}</td>
+        <td class="num">${nf(r.ms)}</td><td class="num">${nf(r.F)}</td>
+        <td class="num ${r.p != null && r.p < 0.05 ? 'okc' : ''}"><b>${pf(r.p)}</b></td><td class="num">${nf(r.eta, 3)}</td></tr>`).join('')}
+      <tr class="faint"><td class="model">residual</td><td class="num">${nf(A.resid.ss)}</td><td class="num">${A.resid.df}</td>
+        <td class="num">${nf(A.resid.ms)}</td><td></td><td></td><td></td></tr>
+      </tbody></table></div>
+      <div class="legend"><span><b>model</b>: do the models differ once seed is accounted for? <b>seed</b>: do the seeds differ
+        (expected, they probe different things)? <b>model × seed</b>: does the gap between models change from seed to seed?
+        If the interaction is significant, read the model row together with the per-seed tables, because then no single
+        model gap describes every seed. The F-tests assume roughly normal residuals with equal spread; the scores are 1–10
+        rubric values and often bimodal, so treat p-values near 0.05 as borderline.</span></div>`;
+    const adj = A.adj.slice().sort((x, y) => (hiBetter ? y.adj - x.adj : x.adj - y.adj));
+    const means = `<h2>Model means adjusted for seed<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first</span></h2>
+      <div class="scroll-x"><table class="list arith"><thead><tr><th class="num">#</th><th>model</th>
+        <th class="num" data-tip="additive fit (model + seed) averaged over the seeds with equal weight, so a model that is missing a seed or has extra epochs on one is not tilted by it">adjusted mean</th>
+        <th class="num">raw mean</th><th class="num">audits</th><th class="num">seeds</th></tr></thead><tbody>
+      ${adj.map((x, i) => `<tr><td class="num rk">${i + 1}</td><td class="model">${brk(x.m)}</td><td class="num"><b>${x.adj.toFixed(2)}</b></td>
+        <td class="num">${x.raw.toFixed(2)}</td><td class="num">${x.n}</td><td class="num">${x.k}${x.k < A.nSeeds ? ` <span class="meta">of ${A.nSeeds}</span>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>`;
+    $('#view').innerHTML = `${controls}${table}${means}`;
+  }
+
   // Which differences are real -> a matrix, one cell per pair. Click a cell for the
   // seed-by-seed breakdown behind it.
   function renderStats(query) {
@@ -1351,7 +1456,7 @@
     const parts = raw.split('/').map((p) => { try { return decodeURIComponent(p); } catch (e) { return p; } });
     const view = parts[0] || 'overview';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.view === (view === 't' ? 'transcripts' : view)));
-    $('#filters').hidden = !(view === 'overview' || view === 'transcripts' || view === 'stats');
+    $('#filters').hidden = !(view === 'overview' || view === 'transcripts' || view === 'stats' || view === 'anova');
     if (view !== 'seeds') SF = null;   // seeds-tab handlers go inert off the tab
     const p = Promise.resolve().then(() => {
       if (view === 'overview') return renderOverview();
@@ -1359,6 +1464,7 @@
       if (view === 't') return renderTranscript(parts[1]);
       if (view === 'compare') return renderCompare(parts.slice(1));
       if (view === 'stats') return renderStats(query);
+      if (view === 'anova') return renderAnova(query);
       if (view === 'seeds') return renderSeeds(parts.slice(1), query);
       if (view === 'rubric') return renderRubric(parts.slice(1));
       $('#view').innerHTML = `<div class="empty">unknown view <code>${esc(view)}</code></div>`;
@@ -1410,7 +1516,8 @@
       const q = new URLSearchParams();
       ['dim', 'scope'].forEach((k) => { if (cur.get(k)) q.set(k, cur.get(k)); });
       if (cur.get('pair') !== prow.dataset.pair) q.set('pair', prow.dataset.pair);   // click again to close
-      location.hash = `#/stats${q.toString() ? `?${q}` : ''}`;
+      const path = (location.hash.split('?')[0] || '#/stats');
+      location.hash = `${path}${q.toString() ? `?${q}` : ''}`;
       return;
     }
     const row = e.target.closest('tr.clickable[data-hash]');
@@ -1426,7 +1533,8 @@
         const v = k === stSel.dataset.st ? stSel.value : (cur.get(k) || '');
         if (v) q.set(k, v);
       });
-      location.hash = `#/stats${q.toString() ? `?${q}` : ''}`;
+      const path = (location.hash.split('?')[0] || '#/stats');
+      location.hash = `${path}${q.toString() ? `?${q}` : ''}`;
     }
   });
 
