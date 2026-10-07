@@ -783,7 +783,9 @@
 
     // ---- the pair a cell opened, seed by seed
     const [pa, pb] = st.pair.split('|');
-    const r = pa && pb && cmp[pa] ? cmp[pa][pb] : null;
+    // cmp[x][y] = compare(pool, y, x): its mA is y's means and mB is x's. The table below
+    // prints mB under pb and mA under pa, so it needs cmp[pb][pa] (mA = pa, mB = pb).
+    const r = pa && pb && cmp[pb] ? cmp[pb][pa] : null;
     const breakdown = !r ? '' : (() => {
       const vals = r.series.flatMap((y) => [y.mA, y.mB]);
       const lo2 = Math.min(...vals), hi2 = Math.max(...vals);
