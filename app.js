@@ -906,15 +906,53 @@
         is significant an overall verdict still averages over seeds that disagree; the per-theme view is the more honest
         ranking. The standard error uses the residual mean square and each model's audit count, an approximation for
         seed-adjusted means when a model is missing seeds.</span></div>`;
-    const pairsSorted = pairs.slice().sort((x, y) => x.p - y.p || Math.abs(y.diff) - Math.abs(x.diff));
-    const pairTable = `<h2>All pairs<span class="hint">${st.corr === 'tukey' ? 'Tukey-Kramer · simultaneous 95% CI' : 'Benjamini-Hochberg FDR · per-pair 95% CI'} · gap = how much better the first model scores, in points (positive = first is better)</span></h2>
-      <details class="box"><summary>${pairs.length} pairs · ${nSig} significantly different</summary><div class="body nw">
-      <div class="scroll-x"><table class="list arith"><thead><tr><th>pair</th><th class="num">gap</th><th class="num">95% CI</th><th class="num">p (adjusted)</th></tr></thead><tbody>
-      ${pairsSorted.map((r) => `<tr class="${r.p < 0.05 ? '' : 'faint'}"><td class="model">${brk(r.a)} <span class="meta">vs</span> ${brk(r.b)}</td>
-        <td class="num"><b>${r.diff >= 0 ? '+' : '−'}${Math.abs(r.diff).toFixed(2)}</b></td>
-        <td class="num">${r.lo.toFixed(2)} to ${r.hi.toFixed(2)}</td>
-        <td class="num ${r.p < 0.05 ? 'okc' : ''}">${pf(r.p)}</td></tr>`).join('')}
-      </tbody></table></div></div></details>`;
+    // ---- pairwise matrix: row against column, rank order, coloured only where significant
+    const gapOf = (x, y) => { const r = pmap.get(pk(x, y)); return { r, g: r.a === x ? r.diff : -r.diff }; };
+    const bigGap = Math.max(0.01, ...pairs.filter((r) => r.p < 0.05).map((r) => Math.abs(r.diff)));
+    const stepOf = (g) => Math.min(3, Math.max(1, Math.ceil(3 * Math.abs(g) / bigGap)));
+    const corrName = st.corr === 'tukey' ? 'Tukey' : 'FDR';
+    const mcell = (x, y) => {
+      if (x === y) return '<td class="mxc self"></td>';
+      const { r, g } = gapOf(x, y);
+      const sig = r.p < 0.05;
+      const lo = r.a === x ? r.lo : -r.hi, hi = r.a === x ? r.hi : -r.lo;
+      const cls = sig ? `${g > 0 ? 'b' : 'r'}${stepOf(g)}` : 'n0';
+      const tipTxt = `${x}\nvs ${y}\ngap ${g >= 0 ? '+' : '−'}${Math.abs(g).toFixed(2)} (positive = row better)\n95% CI ${lo.toFixed(2)} to ${hi.toFixed(2)}\np (${corrName}) ${pf(r.p)}\n${sig ? `${g > 0 ? x : y} is better` : 'no significant difference'}`;
+      return `<td class="mxc ${cls}" data-tip="${esc(tipTxt)}">${g >= 0 ? '+' : '−'}${Math.abs(g).toFixed(2)}</td>`;
+    };
+    const order = adj.map((x) => x.m);
+    const matrix = `<h2>Which is better than which<span class="hint">${corrName} · read a row against each column · the number is how much better the row scores, in points</span></h2>
+      <div class="scroll-x"><table class="list mx"><thead><tr><th></th><th></th>
+        ${order.map((m, i) => `<th class="num" data-tip="${esc(m)}">${i + 1}</th>`).join('')}</tr></thead><tbody>
+      ${order.map((x, i) => `<tr><td class="num rk">${i + 1}</td><td class="model">${brk(x)} <span class="meta"><code>${esc(letters.get(x))}</code></span></td>
+        ${order.map((y) => mcell(x, y)).join('')}</tr>`).join('')}
+      </tbody></table></div>
+      <div class="legend mxlegend">
+        <span><i class="sw b3"></i> row significantly better</span>
+        <span><i class="sw r3"></i> row significantly worse</span>
+        <span><i class="sw n0"></i> no significant difference</span>
+        <span class="meta">stronger fill = bigger gap · hover a cell for its CI and p · ${nSig} of ${pairs.length} pairs differ</span>
+      </div>`;
+    // ---- forest plot: every pair's gap with its CI on one axis, zero marked
+    const fl = Math.min(0, ...pairs.map((r) => r.lo)), fh = Math.max(...pairs.map((r) => r.hi));
+    const at = (v) => `${(100 * (v - fl) / (fh - fl || 1)).toFixed(2)}%`;
+    const frow = (r) => `<tr class="${r.p < 0.05 ? '' : 'faint'}">
+        <td class="model">${brk(r.a)} <span class="meta">${r.p < 0.05 ? 'better than' : 'vs'}</span> ${brk(r.b)}</td>
+        <td class="num"><b>+${r.diff.toFixed(2)}</b></td>
+        <td class="forest" data-tip="${esc(`gap +${r.diff.toFixed(2)}, 95% CI ${r.lo.toFixed(2)} to ${r.hi.toFixed(2)}, p (${corrName}) ${pf(r.p)}`)}">
+          <span class="zero" style="left:${at(0)}"></span>
+          <span class="bar" style="left:${at(r.lo)};right:calc(100% - ${at(r.hi)})"></span>
+          <span class="dot" style="left:${at(r.diff)};${r.p < 0.05 ? '' : 'background:var(--muted)'}"></span></td>
+        <td class="num ${r.p < 0.05 ? 'okc' : 'meta'}">${pf(r.p)}</td></tr>`;
+    const byGap = pairs.slice().sort((x, y) => y.diff - x.diff);
+    const sigRows = byGap.filter((r) => r.p < 0.05), nsRows = byGap.filter((r) => r.p >= 0.05);
+    const fhead = `<thead><tr><th>pair</th><th class="num">gap</th><th>${st.corr === 'tukey' ? 'simultaneous' : 'per-pair'} 95% CI · line = no difference</th><th class="num">p (${corrName})</th></tr></thead>`;
+    const forest = `<h2>Significant gaps<span class="hint">largest first · a CI that stays clear of the zero line is a real difference</span></h2>
+      ${sigRows.length ? `<div class="scroll-x"><table class="list arith">${fhead}<tbody>${sigRows.map(frow).join('')}</tbody></table></div>`
+        : '<div class="empty">No pair differs significantly under this correction.</div>'}
+      ${nsRows.length ? `<details class="box"><summary>${nsRows.length} pairs with no significant difference</summary><div class="body nw">
+        <div class="scroll-x"><table class="list arith">${fhead}<tbody>${nsRows.map(frow).join('')}</tbody></table></div></div></details>` : ''}`;
+    const pairTable = matrix + forest;
     $('#view').innerHTML = `${controls}${table}${means}${pairTable}`;
   }
 
