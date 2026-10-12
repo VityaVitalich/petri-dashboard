@@ -39,12 +39,30 @@ and `petri/CATALOG.md` (candidates), the rubric from `MR-Eval/.claude/skills/pet
 
 ```bash
 ./serve.sh              # rebuild data/ and preview at http://localhost:8765
-./deploy.sh             # rebuild, commit (explicit paths), push main → GitHub Pages
+./deploy.sh             # rebuild, commit (explicit paths), publish (owner: push main; fork: PR)
 ./deploy.sh --skip-build
 python3 build_data.py --mreval /path/to/MR-Eval   # non-default checkout
+python3 build_data.py --prune                     # publish ONLY local runs (drops everyone else's)
 ```
 
-Pages serves `/` of `main`. `deploy.sh` refuses to push from any other branch.
+Pages serves `/` of `main`. The build **merges** with what is already in `data/`:
+runs found on this machine replace their published copies and every other run is
+kept, so people publishing from different machines don't erase each other.
+
+## Contributing from a fork
+
+Collaborators work in a fork with `upstream` pointing here:
+
+```bash
+gh repo fork VityaVitalich/petri-dashboard --clone=false
+git clone https://github.com/<you>/petri-dashboard.git ~/petri-dashboard
+cd ~/petri-dashboard && git remote add upstream https://github.com/VityaVitalich/petri-dashboard.git
+```
+
+In a fork, `./deploy.sh` builds on top of `upstream/main` on the branch
+`data-refresh`, pushes it to the fork and opens (or updates) a single pull request;
+the site changes when it is merged. Changes to the dashboard code go in their own
+branch and PR. `CLAUDE.md` has the step-by-step for Claude.
 No build step, no dependencies beyond Python 3 (PyYAML optional, for seed
 metadata). `?theme=dark|light` in the URL forces a color theme.
 
