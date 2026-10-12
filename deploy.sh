@@ -22,10 +22,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 UPSTREAM_SLUG="VityaVitalich/petri-dashboard"
 SKIP_BUILD=0
+MREVAL="$HOME/MR-Eval"
 BUILD_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
+    --mreval) MREVAL="$2"; BUILD_ARGS+=("$1" "$2"); shift 2 ;;
     *) BUILD_ARGS+=("$1"); shift ;;
   esac
 done
@@ -42,9 +44,22 @@ fi
 echo "▸ mode: $MODE"
 
 if [[ "$MODE" == contributor ]]; then
+  # data/ is build output (serve.sh rewrites it); it is rebuilt from upstream below
+  git restore --staged --worktree data 2>/dev/null || git checkout -- data
+  git clean -fdq data
   if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo "✗ uncommitted changes — commit or stash them first (they belong in their own PR)" >&2
+    echo "✗ uncommitted changes to the dashboard code — commit them on their own branch first" >&2
+    git status --short >&2
     exit 1
+  fi
+  # the seed list and rubric on the site come from this checkout, so it must not be stale
+  if git -C "$MREVAL" remote get-url upstream >/dev/null 2>&1; then
+    git -C "$MREVAL" fetch -q upstream main
+    if ! git -C "$MREVAL" merge-base --is-ancestor upstream/main HEAD; then
+      echo "✗ $MREVAL is behind upstream/main — sync it first (git merge upstream/main), so the" >&2
+      echo "  site doesn't get an old seed list or rubric" >&2
+      exit 1
+    fi
   fi
   git fetch -q upstream main
   # always start from what is live now, so the PR never conflicts with newer refreshes
@@ -84,7 +99,7 @@ if [[ "$MODE" == owner ]]; then
   echo "▸ pushed — Pages rebuilds in ~1 min: https://vityavitalich.github.io/petri-dashboard/"
 else
   git push -q -f origin data-refresh
-  PR_URL=$(gh pr list --repo "$UPSTREAM_SLUG" --head data-refresh --state open --json url -q '.[0].url')
+  PR_URL=$(gh pr list --repo "$UPSTREAM_SLUG" --head data-refresh --author "@me" --state open --json url -q '.[0].url')
   if [[ -n "$PR_URL" ]]; then
     echo "▸ updated the open pull request: $PR_URL"
   else
