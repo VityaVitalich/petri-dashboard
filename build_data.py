@@ -15,6 +15,11 @@ and writes:
 Usage:
     python3 build_data.py                       # defaults below
     python3 build_data.py --outputs ~/MR-Eval/outputs/petri --mreval ~/MR-Eval
+    python3 build_data.py --prune               # publish only local runs (drops everyone else's)
+
+By default the build MERGES: runs found locally replace their published copies,
+and every other run already in data/ is kept, so two people publishing from two
+machines never wipe each other's transcripts.
 
 The seed catalog (theme, status, tags, body) and the judge rubric come from the
 MR-Eval checkout (`petri/seeds`, `petri/seeds.yaml`, `petri/CATALOG.md`,
@@ -281,6 +286,63 @@ def load_seeds(petri_dir: Path) -> tuple[dict, dict]:
 
 
 # ------------------------------------------------------------------ runs ----
+def summarise_models(runs: list[dict]) -> list[dict]:
+    models: dict[str, dict] = {}
+    for r in runs:
+        m = models.setdefault(r["alias"], {"alias": r["alias"], "target_model": r["target_model"],
+                                           "n_runs": 0, "n_transcripts": 0, "n_scored": 0, "latest_utc": ""})
+        m["n_runs"] += 1
+        m["n_transcripts"] += r["n_transcripts"]
+        m["n_scored"] += r["n_scored"]
+        m["latest_utc"] = max(m["latest_utc"], r["utc"])
+        if r["target_model"]:
+            m["target_model"] = r["target_model"]
+    return sorted(models.values(), key=lambda m: m["alias"])
+
+
+def flag_unknown_seeds(transcripts: list[dict], seeds: dict, issues: list[dict]) -> None:
+    for s in sorted({t["seed"] for t in transcripts} - set(seeds)):
+        seeds[s] = {"id": s, "theme": None, "status": "unknown", "tags": [], "fit": None, "mode": None,
+                    "probes": None, "disabled_reason": None, "note": None, "body": ""}
+        issues.append({"seed": s, "what": "seed used in a run but not found in petri/seeds"})
+
+
+def merge_published(built: dict, out: Path) -> int:
+    """Keep every already-published run that this machine's outputs don't have.
+
+    Several people publish to one site, and each only has their own runs on disk.
+    A run found locally replaces its published copy; every other published run is
+    carried over untouched (its data/runs/<id>.json stays as it is). Returns how
+    many runs were carried over.
+    """
+    idx_p = out / "index.json"
+    if not idx_p.is_file():
+        return 0
+    old = json.loads(idx_p.read_text(encoding="utf-8"))
+    idx = built["index"]
+    fresh = {r["id"] for r in idx["runs"]}
+    kept = [r for r in old.get("runs", []) if r["id"] not in fresh and (out / r["file"]).is_file()]
+    kept_ids = {r["id"] for r in kept}
+    idx["runs"] = sorted(idx["runs"] + kept, key=lambda r: (r["alias"], r["utc"]))
+    idx["transcripts"] = sorted(
+        idx["transcripts"] + [t for t in old.get("transcripts", []) if t["run_id"] in kept_ids],
+        key=lambda t: (t["alias"], t["utc"], t["leaf"]))
+    # unknown-seed placeholders and their issues are re-derived over the merged set
+    idx["seeds"] = {k: v for k, v in idx["seeds"].items() if v["status"] != "unknown"}
+    idx["issues"] = [i for i in idx["issues"] if "seed" not in i]
+    # a seed another publisher has and this checkout doesn't (e.g. not merged yet):
+    # keep its published record so its transcripts still show the seed text
+    for t in idx["transcripts"]:
+        s = t["seed"]
+        if s not in idx["seeds"] and s in old.get("seeds", {}):
+            idx["seeds"][s] = old["seeds"][s]
+    idx["issues"] += [i for i in old.get("issues", []) if i.get("run") in kept_ids]
+    idx["models"] = summarise_models(idx["runs"])
+    flag_unknown_seeds(idx["transcripts"], idx["seeds"], idx["issues"])
+    idx["source"]["carried_over_runs"] = len(kept)
+    return len(kept)
+
+
 def leaf_key(name: str) -> tuple[str, int] | None:
     m = re.match(r"^(.+?)__e(\d+)$", name)
     return (m.group(1), int(m.group(2))) if m else None
@@ -332,8 +394,10 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
                     # "missing" is legible as the auditor/judge refusals it is.
                     le, _ = read_json(leaf / "leaf_error.json")
                     if isinstance(le, dict):
-                        cat = (le.get("stop_details") or {}).get("category") or le.get("type") or "?"
-                        what = f"no audit: {le.get('role') or '?'} {cat}"
+                        # API-harness format {role, type, stop_details} or skill format {stage, reason}
+                        cat = ((le.get("stop_details") or {}).get("category") or le.get("type")
+                               or le.get("reason") or "?")
+                        what = f"no audit: {le.get('role') or le.get('stage') or '?'} {cat}"
                     else:
                         what = f"transcript.json {terr}"
                     issues.append({"run": run_id, "leaf": leaf.name, "what": what})
@@ -381,6 +445,12 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
                         issues.append({"run": run_id, "leaf": leaf.name, "what": "score.json has no scores (judge refusal?)"})
                 elif serr != "missing":
                     issues.append({"run": run_id, "leaf": leaf.name, "what": f"score.json {serr}"})
+                else:
+                    le, _ = read_json(leaf / "leaf_error.json")
+                    if isinstance(le, dict):
+                        issues.append({"run": run_id, "leaf": leaf.name,
+                                       "what": f"not scored: {le.get('stage') or le.get('role') or '?'} "
+                                               f"{le.get('reason') or le.get('type') or '?'}"})
 
                 timeline = tr.get("timeline") or []
                 branches = sorted({int(e.get("branch", 0)) for e in timeline}) if timeline else [0]
@@ -440,22 +510,8 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
             runs.append(run_rec)
             run_files[run_id] = {"run": run_rec, "transcripts": full}
 
-    models: dict[str, dict] = {}
-    for r in runs:
-        m = models.setdefault(r["alias"], {"alias": r["alias"], "target_model": r["target_model"],
-                                           "n_runs": 0, "n_transcripts": 0, "n_scored": 0, "latest_utc": ""})
-        m["n_runs"] += 1
-        m["n_transcripts"] += r["n_transcripts"]
-        m["n_scored"] += r["n_scored"]
-        m["latest_utc"] = max(m["latest_utc"], r["utc"])
-        if r["target_model"]:
-            m["target_model"] = r["target_model"]
-
-    used_seeds = {t["seed"] for t in index_transcripts}
-    for s in used_seeds - set(seeds):
-        seeds[s] = {"id": s, "theme": None, "status": "unknown", "tags": [], "fit": None, "mode": None,
-                    "probes": None, "disabled_reason": None, "note": None, "body": ""}
-        issues.append({"seed": s, "what": "seed used in a run but not found in petri/seeds"})
+    models = summarise_models(runs)
+    flag_unknown_seeds(index_transcripts, seeds, issues)
 
     try:
         sha = subprocess.run(["git", "-C", str(petri_dir.parent), "rev-parse", "--short", "HEAD"],
@@ -478,7 +534,7 @@ def build(outputs: Path, petri_dir: Path, dims_md: Path) -> dict:
         "groups": [{"id": g, "title": GROUP_TITLES[g]} for g in GROUP_ORDER],
         "themes": themes,
         "seeds": seeds,
-        "models": sorted(models.values(), key=lambda m: m["alias"]),
+        "models": models,
         "runs": runs,
         "transcripts": index_transcripts,
         "issues": issues,
@@ -491,6 +547,9 @@ def main() -> int:
     ap.add_argument("--mreval", type=Path, default=Path.home() / "MR-Eval", help="MR-Eval checkout (seeds + rubric)")
     ap.add_argument("--outputs", type=Path, default=None, help="petri outputs root (default <mreval>/outputs/petri)")
     ap.add_argument("--out", type=Path, default=DATA, help="output data dir (default ./data)")
+    ap.add_argument("--prune", action="store_true",
+                    help="publish ONLY the runs found locally, dropping every other published run "
+                         "(default: keep published runs this machine doesn't have)")
     a = ap.parse_args()
     outputs = a.outputs or (a.mreval / "outputs" / "petri")
     petri_dir = a.mreval / "petri"
@@ -499,11 +558,15 @@ def main() -> int:
     built = build(outputs.expanduser(), petri_dir.expanduser(), dims_md.expanduser())
     out = a.out
     (out / "runs").mkdir(parents=True, exist_ok=True)
-    # drop stale run files so deleted runs disappear from the site
-    keep = {f"{rid}.json" for rid in built["runs"]}
-    for old in (out / "runs").glob("*.json"):
-        if old.name not in keep:
-            old.unlink()
+    if a.prune:
+        # drop stale run files so deleted runs disappear from the site
+        keep = {f"{rid}.json" for rid in built["runs"]}
+        for old in (out / "runs").glob("*.json"):
+            if old.name not in keep:
+                old.unlink()
+    else:
+        n = merge_published(built, out)
+        log(f"kept {n} published runs not found under {outputs} (--prune drops them)")
     for rid, payload in built["runs"].items():
         (out / "runs" / f"{rid}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     (out / "index.json").write_text(json.dumps(built["index"], ensure_ascii=False, indent=1), encoding="utf-8")

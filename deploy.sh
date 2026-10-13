@@ -1,25 +1,70 @@
 #!/usr/bin/env bash
 # Rebuild data/ from the MR-Eval petri outputs and publish to GitHub Pages.
 #
-#   ./deploy.sh                 # rebuild + commit + push (main branch, Pages serves / of main)
+#   ./deploy.sh                 # rebuild + publish (see the two modes below)
 #   ./deploy.sh --skip-build    # publish already-built data/
 #   ./deploy.sh --mreval PATH   # non-default MR-Eval checkout (forwarded to build_data.py)
+#   ./deploy.sh --prune         # forwarded: publish ONLY local runs (drops everyone else's)
 #
 # Pages URL: https://vityavitalich.github.io/petri-dashboard/
-# Stages explicit paths only (never `git add -A`), refuses to push from a
-# branch other than main.
+#
+# Two modes, picked from the remotes:
+#   owner        origin is VityaVitalich/petri-dashboard. Commits on main and pushes it.
+#   contributor  a fork: origin is the fork, `upstream` is VityaVitalich/petri-dashboard.
+#                Builds on top of upstream/main on the branch `data-refresh`, pushes it to
+#                the fork and opens (or updates) a pull request. The site changes once
+#                the owner merges it.
+# The build merges with what is already published, so neither mode drops other
+# people's runs. Stages explicit paths only (never `git add -A`).
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+UPSTREAM_SLUG="VityaVitalich/petri-dashboard"
 SKIP_BUILD=0
+MREVAL="$HOME/MR-Eval"
 BUILD_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
+    --mreval) MREVAL="$2"; BUILD_ARGS+=("$1" "$2"); shift 2 ;;
     *) BUILD_ARGS+=("$1"); shift ;;
   esac
 done
+
+if git remote get-url origin 2>/dev/null | grep -q "$UPSTREAM_SLUG"; then
+  MODE=owner
+elif git remote get-url upstream >/dev/null 2>&1; then
+  MODE=contributor
+else
+  echo "✗ origin is not $UPSTREAM_SLUG and there is no 'upstream' remote." >&2
+  echo "  In a fork run: git remote add upstream https://github.com/$UPSTREAM_SLUG.git" >&2
+  exit 1
+fi
+echo "▸ mode: $MODE"
+
+if [[ "$MODE" == contributor ]]; then
+  # data/ is build output (serve.sh rewrites it); it is rebuilt from upstream below
+  git restore --staged --worktree data 2>/dev/null || git checkout -- data
+  git clean -fdq data
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "✗ uncommitted changes to the dashboard code — commit them on their own branch first" >&2
+    git status --short >&2
+    exit 1
+  fi
+  # the seed list and rubric on the site come from this checkout, so it must not be stale
+  if git -C "$MREVAL" remote get-url upstream >/dev/null 2>&1; then
+    git -C "$MREVAL" fetch -q upstream main
+    if ! git -C "$MREVAL" merge-base --is-ancestor upstream/main HEAD; then
+      echo "✗ $MREVAL is behind upstream/main — sync it first (git merge upstream/main), so the" >&2
+      echo "  site doesn't get an old seed list or rubric" >&2
+      exit 1
+    fi
+  fi
+  git fetch -q upstream main
+  # always start from what is live now, so the PR never conflicts with newer refreshes
+  git switch -q -C data-refresh upstream/main
+fi
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
   echo "▸ building data/"
@@ -34,17 +79,34 @@ for r in idx["runs"]:
 print(f"▸ validated: {len(idx['transcripts'])} transcripts in {len(idx['runs'])} runs")
 PY
 
-BRANCH=$(git branch --show-current)
-if [[ "$BRANCH" != "main" ]]; then
-  echo "✗ on branch '$BRANCH', not main — refusing to publish" >&2
-  exit 1
+if [[ "$MODE" == owner ]]; then
+  BRANCH=$(git branch --show-current)
+  if [[ "$BRANCH" != "main" ]]; then
+    echo "✗ on branch '$BRANCH', not main — refusing to publish" >&2
+    exit 1
+  fi
 fi
 
-git add data index.html app.js style.css build_data.py deploy.sh serve.sh README.md .gitignore .nojekyll
+git add data index.html app.js style.css build_data.py deploy.sh serve.sh README.md CLAUDE.md .gitignore .nojekyll
 if git diff --cached --quiet; then
   echo "▸ nothing to publish (no changes)"
   exit 0
 fi
 git commit -q -m "refresh $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-git push origin main
-echo "▸ pushed — Pages rebuilds in ~1 min: https://vityavitalich.github.io/petri-dashboard/"
+
+if [[ "$MODE" == owner ]]; then
+  git push origin main
+  echo "▸ pushed — Pages rebuilds in ~1 min: https://vityavitalich.github.io/petri-dashboard/"
+else
+  git push -q -f origin data-refresh
+  PR_URL=$(gh pr list --repo "$UPSTREAM_SLUG" --head data-refresh --author "@me" --state open --json url -q '.[0].url')
+  if [[ -n "$PR_URL" ]]; then
+    echo "▸ updated the open pull request: $PR_URL"
+  else
+    FORK_OWNER=$(gh api user -q .login)
+    gh pr create --repo "$UPSTREAM_SLUG" --base main --head "$FORK_OWNER:data-refresh" \
+      --title "Petri data refresh from $FORK_OWNER" \
+      --body "New Petri runs from $FORK_OWNER's machine. Built with the merging build_data.py, so every run already on the site is kept."
+  fi
+  echo "▸ the live site updates once the pull request is merged"
+fi
