@@ -15,6 +15,7 @@
   --s1: #2a78d6;  /* categorical slot 1 (compare: A) */
   --s2: #eb6834;  /* categorical slot 2 (compare: B) */
   --s3: #1baf7a;
+  --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
   --flash: rgba(42, 120, 214, 0.18);
   /* sequential ramp for 1..10 scores (blue, light→dark) + text ink per step */
   --q1: #cde2fb; --q2: #b7d3f6; --q3: #9ec5f4; --q4: #6da7ec; --q5: #3987e5;
@@ -30,6 +31,7 @@
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
     --link: #86b6ef; --good-text: #0ca30c;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --flash: rgba(57, 135, 229, 0.28);
     --q1: #184f95; --q2: #1c5cab; --q3: #256abf; --q4: #2a78d6; --q5: #3987e5;
     --q6: #5598e7; --q7: #6da7ec; --q8: #86b6ef; --q9: #9ec5f4; --q10: #cde2fb;
@@ -44,6 +46,7 @@
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
   --link: #86b6ef; --good-text: #0ca30c;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
   --flash: rgba(57, 135, 229, 0.28);
   --q1: #184f95; --q2: #1c5cab; --q3: #256abf; --q4: #2a78d6; --q5: #3987e5;
   --q6: #5598e7; --q7: #6da7ec; --q8: #86b6ef; --q9: #9ec5f4; --q10: #cde2fb;
@@ -510,3 +513,22 @@ td.ci .dot { position: absolute; top: 6px; width: 10px; height: 10px; margin-lef
 td.ci .dot.s2 { background: var(--st-s2); }
 td.ci.sym .zero { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ink-2); opacity: .4; }
 table.rank td.model { font-size: 13px; }
+
+/* ---------------------------------------------------------------- scaling ---- */
+.sc-box { padding: 8px 4px; }
+.sc-chart { width: 100%; max-width: 860px; height: auto; display: block; }
+.sc-grid { stroke: var(--grid); stroke-width: 1; }
+.sc-zero { stroke: var(--axis); stroke-dasharray: 4 3; }
+.sc-axis { stroke: var(--axis); stroke-width: 1; }
+.sc-tick { fill: var(--muted); font-size: 11px; }
+.sc-lab { fill: var(--ink-2); font-size: 12px; }
+.sc-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.sc-dot { stroke: var(--surface); stroke-width: 2; }
+.sc-init { fill: none; stroke-width: 1.5; opacity: 0.7; }
+.sc-hit { fill: transparent; cursor: default; }
+.sc-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0 8px; font-size: 13px; }
+.sc-pill { color: var(--ink-2); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.sc-pill i, .sc-sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+.sc-pill i { margin-right: 0; }
+.sc-pill.off { color: var(--muted); text-decoration: line-through; }
+.sc-pill.off i { opacity: 0.3; }
