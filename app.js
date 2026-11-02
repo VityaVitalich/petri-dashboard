@@ -242,7 +242,22 @@
   function filterItems(key) {
     const idx = S.idx;
     if (key === 'models') {
-      return idx.models.map((m) => ({ v: m.alias, label: m.alias, n: m.n_transcripts, tip: m.target_model || '', group: m.alias.split('_')[0] }));
+      // two levels, so a whole family (every size and init seed) or one size of it is one click:
+      // 1PP models by family (asst, user+asst, raw docs, … · raw→conv cooldown) then size;
+      // other models by name prefix, then the model with its `_seed<N>` retrainings together
+      return idx.models.map((m) => {
+        const p = scParse(m.alias);
+        const base = m.alias.replace(/_seed\d+(?=_sft$|$)/, '');
+        const fi = p ? SC_DEFAULT_FAMILIES.indexOf(p.family) : -1;
+        return {
+          v: m.alias, label: m.alias, n: m.n_transcripts, tip: m.target_model || '',
+          group1: p ? `1PP · ${scLabel(p.family)}` : m.alias.split('_')[0],
+          group: p ? `${p.family} ${p.size}` : base,
+          glabel: p ? (SC_SIZE_LABEL[p.size] || `${p.size}B`) : base,
+          _k: p ? `0 ${String(fi < 0 ? 99 : fi).padStart(2, '0')} ${p.family} ${String(p.size * 10).padStart(3, '0')} ${p.replicate === 'main' ? '' : p.replicate.padStart(6, '0')}`
+            : `1 ${m.alias.split('_')[0]} ${base} ${m.alias}`,
+        };
+      }).sort((x, y) => x._k.localeCompare(y._k));
     }
     if (key === 'seeds') {
       const counts = {};
@@ -1110,140 +1125,175 @@
   }
 
   // --------------------------------------------------------------- scaling ----
-  // One judge dimension against model size: `<family>_<size>_<condition>[_seed<N>]_sft`
-  // aliases (e.g. 1pp_1p7b_asst_rawanneal_seed42_sft) give the size and the line. A model's
-  // score is the mean over the scenario seeds every plotted model has (equal weight per
-  // scenario, so a model is not tilted by the seeds it was audited on most); a point is the
-  // mean over that condition's init seeds, which are drawn as small rings around it.
-  const SC_ORDER = ['raw', 'asst', 'ua', 'asst_rawanneal', 'ua_rawanneal'];
-  function sizeSplit(alias) {
-    const m = alias.match(/^([a-z0-9]+)_(\d+(?:p\d+)?b)_(.+?)(?:_seed(\d+))?(_sft)?$/);
+  // Judge dimensions against 1PP model size, laid out like the MR-Eval dashboard's Scaling tab:
+  // a control bar (show, init seeds, families, Petri seeds, dimensions) and one small chart per
+  // dimension. Each model contributes its final run only. A model's score is the mean over the
+  // selected Petri seeds of its per-seed mean, so every point weighs the seeds equally. Init-seed
+  // replicates (`_seed<N>` aliases, 1.7B so far) plot as hollow markers beside the main run.
+  const SC_SIZES = { '0p5b': 0.5, '1b': 1, '1p7b': 1.7 };
+  const SC_SIZE_LABEL = { 0.5: '0.5B', 1: '1B', 1.7: '1.7B' };
+  const SC_COND_LABEL = { asst: 'asst', ua: 'user+asst', raw: 'raw docs' };
+  const SC_VARIANT_LABEL = { '': '', rawanneal: 'raw→conv cooldown', tokmatch: 'token-matched', tokmatchog: 'token-matched (orig. docs)' };
+  const SC_VARIANT_DASH = { '': '', rawanneal: '7 4', tokmatch: '2 3', tokmatchog: '8 3 2 3' };
+  const SC_VARIANT_POINT = { '': 'circle', rawanneal: 'rect', tokmatch: 'triangle', tokmatchog: 'diamond' };
+  const SC_DEFAULT_FAMILIES = ['asst', 'ua', 'raw', 'asst_rawanneal', 'ua_rawanneal'];
+  const SC_DEFAULT_DIMS = [CGP, 'concerning', 'principled_resistance', 'capability_defect'];
+  const SC_LS = 'petri:scaling:v1';
+  function scParse(alias) {
+    const m = alias.match(/^1pp_(0p5b|1b|1p7b)_(asst|ua|raw)(?:_(.+))?_sft$/);
     if (!m) return null;
-    const size = parseFloat(m[2].replace('p', '.'));
-    return { fam: m[1], size, sizeLabel: `${m[2].replace('p', '.').replace(/b$/, 'B')}`, cond: m[3], init: m[4] || 'default' };
+    let variant = m[3] || '', replicate = 'main';
+    const sm = variant.match(/(?:^|_)seed(\d+)$/);
+    if (sm) { variant = variant.slice(0, sm.index); replicate = sm[1]; }
+    return { alias, size: SC_SIZES[m[1]], cond: m[2], variant, family: variant ? `${m[2]}_${variant}` : m[2], replicate };
   }
-  function renderScaling(query) {
-    const ts = filtered();
-    const st = { dim: query.get('dim') || CGP, y: query.get('y') || 'abs', hide: new Set((query.get('hide') || '').split(',').filter(Boolean)) };
-    const d = dimById(st.dim);
-    const f = (t) => dimVal(t, d);
-    const hiBetter = !!d.higher_better && !d.inverted;
-    const sel = (key, label, opts, val, tip) => `<label class="ctl" data-tip="${esc(tip)}">${label}
-      <select data-st="${key}">${opts.map((o) => `<option value="${esc(o.v)}"${o.v === val ? ' selected' : ''}>${esc(o.l)}</option>`).join('')}</select></label>`;
-    const rows = ts.map((t) => ({ t, p: sizeSplit(t.alias), y: f(t) })).filter((r) => r.p && typeof r.y === 'number');
-    const skipped = [...new Set(ts.filter((t) => !sizeSplit(t.alias)).map((t) => t.alias))];
-    const fams = [...new Set(rows.map((r) => r.p.fam))];
-    const sKey = (p) => (fams.length > 1 ? `${p.fam} ${p.cond}` : p.cond);
-    const allSeries = [...new Set(rows.map((r) => sKey(r.p)))].sort((a, b) => {
-      const ia = SC_ORDER.indexOf(a.split(' ').pop()), ib = SC_ORDER.indexOf(b.split(' ').pop());
+  const scParts = (fam) => { const i = fam.indexOf('_'); return i < 0 ? { cond: fam, variant: '' } : { cond: fam.slice(0, i), variant: fam.slice(i + 1) }; };
+  const scLabel = (fam) => { const { cond, variant } = scParts(fam); const v = SC_VARIANT_LABEL[variant] ?? variant; return (SC_COND_LABEL[cond] || cond) + (v ? ` · ${v}` : ''); };
+  const scStyle = (fam) => { const { cond, variant } = scParts(fam); return { color: `var(--fam-${cond}, var(--muted))`, dash: SC_VARIANT_DASH[variant] ?? '4 2', point: SC_VARIANT_POINT[variant] || 'diamond' }; };
+  function scMarker(point, x, y, r, color, hollow) {
+    const paint = hollow ? `fill="var(--surface)" stroke="${color}" stroke-width="1.6"` : `fill="${color}" stroke="var(--surface)" stroke-width="1.5"`;
+    if (point === 'rect') return `<rect x="${x - r}" y="${y - r}" width="${2 * r}" height="${2 * r}" ${paint}/>`;
+    if (point === 'triangle') return `<path d="M${x} ${y - r - 1}L${x + r + 1} ${y + r}L${x - r - 1} ${y + r}Z" ${paint}/>`;
+    if (point === 'diamond') return `<path d="M${x} ${y - r - 1}L${x + r + 1} ${y}L${x} ${y + r + 1}L${x - r - 1} ${y}Z" ${paint}/>`;
+    return `<circle cx="${x}" cy="${y}" r="${r}" ${paint}/>`;
+  }
+  const scGlyph = (fam) => {
+    const s = scStyle(fam);
+    return `<svg width="30" height="12" aria-hidden="true"><line x1="1" x2="29" y1="6" y2="6" stroke="${s.color}" stroke-width="2.5"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''}/>${scMarker(s.point, 15, 6, 4, s.color, false)}</svg>`;
+  };
+  function scDefaults() {
+    return { view: 'abs', seeds: 'reps', fams: [...SC_DEFAULT_FAMILIES], dims: [...SC_DEFAULT_DIMS], offSeeds: [] };
+  }
+  function scState() {
+    const d = scDefaults();
+    try { return Object.assign(d, JSON.parse(localStorage.getItem(SC_LS) || '{}') || {}); } catch (e) { return d; }
+  }
+  function scSave(st) { try { localStorage.setItem(SC_LS, JSON.stringify(st)); } catch (e) { /* ignore */ } }
+
+  function renderScaling() {
+    const st = scState();
+    const fin = finalRuns();
+    const ts = S.idx.transcripts.filter((t) => fin.has(t.run_id) && scParse(t.alias));
+    const models = [...new Set(ts.map((t) => t.alias))].map(scParse);
+    if (!models.length) return void ($('#view').innerHTML = '<div class="empty">No 1PP models (<code>1pp_&lt;size&gt;_&lt;condition&gt;…_sft</code>) have a final run yet.</div>');
+    // Petri seeds every model's final run has, so every point averages the same seeds
+    const seedsOf = new Map(models.map((m) => [m.alias, new Set(ts.filter((t) => t.alias === m.alias).map((t) => t.seed))]));
+    const common = [...new Set(ts.map((t) => t.seed))].filter((s) => models.every((m) => seedsOf.get(m.alias).has(s))).sort();
+    const offSeeds = new Set(st.offSeeds);
+    const seeds = common.filter((s) => !offSeeds.has(s));
+    const allFams = [...new Set(models.map((m) => m.family))].sort((a, b) => {
+      const ia = SC_DEFAULT_FAMILIES.indexOf(a), ib = SC_DEFAULT_FAMILIES.indexOf(b);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
     });
-    const hasRaw = allSeries.some((k) => k.split(' ').pop() === 'raw');
-    if (st.y === 'raw' && !hasRaw) st.y = 'abs';
-    const controls = `<div class="ctls">
-      ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to plot')}
-      ${sel('y', 'y axis', [{ v: 'abs', l: 'score' }].concat(hasRaw ? [{ v: 'raw', l: 'gap to raw at the same size' }] : []), st.y,
-            'score: the condition mean. gap to raw: condition minus the raw condition of the same size and family')}
-      <span class="meta">scenario seeds, runs and models come from the filter bar above</span></div>`;
-    // scenario seeds that every plotted model has
-    const aliases = [...new Set(rows.map((r) => r.t.alias))];
-    const seedsOf = new Map(aliases.map((a) => [a, new Set(rows.filter((r) => r.t.alias === a).map((r) => r.t.seed))]));
-    const allSeeds = [...new Set(rows.map((r) => r.t.seed))];
-    const common = allSeeds.filter((s) => aliases.every((a) => seedsOf.get(a).has(s)));
-    if (!aliases.length || !common.length) {
-      return void ($('#view').innerHTML = controls + `<div class="empty">${aliases.length
-        ? 'The selected models share no scenario seed; narrow the models or seeds in the filter bar.'
-        : 'No selected model has a size in its name (<code>&lt;family&gt;_&lt;size&gt;_&lt;condition&gt;</code>, e.g. 1pp_1p7b_asst_sft).'}</div>`);
-    }
-    const dropped = allSeeds.filter((s) => !common.includes(s));
-    const cs = new Set(common);
-    // alias score = mean over common scenarios of the per-scenario mean
-    const aliasScore = new Map(aliases.map((a) => {
-      const rs = rows.filter((r) => r.t.alias === a && cs.has(r.t.seed));
-      const per = common.map((s) => mean(rs.filter((r) => r.t.seed === s).map((r) => r.y)));
-      return [a, { y: mean(per), n: rs.length, p: sizeSplit(a) }];
-    }));
-    // points: series x size -> init seeds
-    const pts = new Map();
-    aliasScore.forEach((v, a) => {
-      const k = `${sKey(v.p)}\u0000${v.p.size}`;
-      if (!pts.has(k)) pts.set(k, { series: sKey(v.p), fam: v.p.fam, size: v.p.size, sizeLabel: v.p.sizeLabel, inits: [] });
-      pts.get(k).inits.push({ init: v.p.init, y: v.y, n: v.n, alias: a });
-    });
-    pts.forEach((pt) => {
-      pt.inits.sort((x, y) => (x.init === 'default' ? -1 : y.init === 'default' ? 1 : x.init - y.init));
-      pt.y = mean(pt.inits.map((i) => i.y));
-    });
-    if (st.y === 'raw') {
-      const rawY = new Map([...pts.values()].filter((pt) => pt.series.split(' ').pop() === 'raw').map((pt) => [`${pt.fam}\u0000${pt.size}`, pt.y]));
-      pts.forEach((pt) => {
-        const base = rawY.has(`${pt.fam}\u0000${pt.size}`) ? rawY.get(`${pt.fam}\u0000${pt.size}`) : null;
-        pt.base = base;
-        if (base == null) { pt.y = null; return; }
-        pt.y -= base; pt.inits.forEach((i) => { i.y -= base; });
+    const famOn = new Set(st.fams);
+    const dimList = dims().filter((d) => d.group !== 'legacy' && ts.some((t) => typeof dimVal(t, d) === 'number'));
+    const dimOn = st.dims.filter((id) => dimList.some((d) => d.id === id));
+    const sizes = [...new Set(models.map((m) => m.size))].sort((a, b) => a - b);
+    const sel = (key, label, opts) => `<label>${label} <select data-scs="${key}">${opts.map(([v, l]) =>
+      `<option value="${v}"${st[key] === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+    const chip = (attr, v, on, inner, tip) => `<span class="sc-chip${on ? '' : ' off'}" ${attr}="${esc(v)}" role="button" aria-pressed="${on}"${tip ? ` data-tip="${esc(tip)}"` : ''}>${inner}</span>`;
+    const bar = `<div class="box sc-bar">
+      <div class="sc-row">${sel('view', 'Show', [['abs', 'Absolute values'], ['win', 'Win over raw docs (same size)']])}
+        ${sel('seeds', 'Init seeds', [['reps', 'Main run + replicates'], ['avg', 'Average over init seeds'], ['main', 'Main run only']])}
+        <span class="sc-spacer"></span><button type="button" class="sc-btn" data-sc-reset>Reset</button></div>
+      <div class="sc-row"><span class="sc-key">Families</span><span class="sc-chips">${allFams.map((f) => chip('data-scf', f, famOn.has(f), `${scGlyph(f)}${esc(scLabel(f))}`)).join('')}</span></div>
+      <div class="sc-row"><span class="sc-key">Petri seeds</span><span class="sc-chips">${common.map((s) => chip('data-scp', s, !offSeeds.has(s), esc(s), seedOf(s).probes || '')).join('')}
+        <a href="#" class="sc-link" data-scp-all>all</a><a href="#" class="sc-link" data-scp-none>none</a></span></div>
+      <div class="sc-row"><span class="sc-key">Dimensions</span><span class="sc-chips sc-dim-chips">${dimList.map((d) => chip('data-scd', d.id, dimOn.includes(d.id), esc(dimShort(d.id)), d.desc || d.id)).join('')}</span></div>
+      <p class="sc-note">Final run of each 1PP +SFT model; a point is the mean over the ${seeds.length} selected Petri seeds of the model's per-seed mean.
+        ${st.seeds === 'reps' ? 'Hollow markers = init-seed replicates (1.7B), a rough guide to retraining noise.' : st.seeds === 'avg' ? 'Points average the main run and its init-seed replicates.' : 'Init-seed replicates are left out.'}
+        ${st.view === 'win' ? 'Win = how much better than raw docs of the same size and variant group, in score points (positive = better).' : ''}</p></div>`;
+    // score of one model on one dimension over the selected seeds
+    const scoreOf = (alias, d) => {
+      const per = seeds.map((s) => {
+        const ys = ts.filter((t) => t.alias === alias && t.seed === s).map((t) => dimVal(t, d)).filter((v) => typeof v === 'number');
+        return ys.length ? mean(ys) : null;
       });
-    }
-    const slot = (k) => `var(--s${(allSeries.indexOf(k) % 8) + 1})`;
-    const shown = allSeries.filter((k) => !st.hide.has(k) && !(st.y === 'raw' && k.split(' ').pop() === 'raw'));
-    const P = [...pts.values()].filter((pt) => shown.includes(pt.series) && pt.y != null);
-    const sizes = [...new Set([...pts.values()].map((pt) => pt.size))].sort((a, b) => a - b);
-    // ---- chart geometry
-    const W = 760, H = 380, ml = 52, mr = 150, mt = 16, mb = 44;
-    const lx = (v) => Math.log(v);
-    const x0 = lx(sizes[0]), x1 = lx(sizes[sizes.length - 1]);
-    const X = (v) => (sizes.length === 1 ? ml + (W - ml - mr) / 2 : ml + (W - ml - mr) * (lx(v) - x0) / (x1 - x0));
-    const ys = P.flatMap((pt) => [pt.y, ...pt.inits.map((i) => i.y)]).concat(st.y === 'raw' ? [0] : []);
-    let ylo = Math.min(...ys), yhi = Math.max(...ys);
-    const pad = Math.max(0.1, (yhi - ylo) * 0.12); ylo -= pad; yhi += pad;
-    const step = [0.1, 0.2, 0.25, 0.5, 1, 2].find((s) => (yhi - ylo) / s <= 7) || 2;
-    const Y = (v) => mt + (H - mt - mb) * (1 - (v - ylo) / (yhi - ylo || 1));
-    const yt = []; for (let v = Math.ceil(ylo / step) * step; v <= yhi + 1e-9; v += step) yt.push(+v.toFixed(3));
-    const fmt = (v) => (st.y === 'raw' && v > 0 ? '+' : '') + v.toFixed(2);
-    const grid = yt.map((v) => `<line x1="${ml}" x2="${W - mr}" y1="${Y(v)}" y2="${Y(v)}" class="sc-grid${st.y === 'raw' && v === 0 ? ' sc-zero' : ''}"/>
-      <text x="${ml - 8}" y="${Y(v) + 4}" class="sc-tick" text-anchor="end">${fmt(v)}</text>`).join('');
-    const xt = sizes.map((v) => `<text x="${X(v)}" y="${H - mb + 20}" class="sc-tick" text-anchor="middle">${esc([...pts.values()].find((pt) => pt.size === v).sizeLabel)}</text>`).join('');
-    const lines = shown.map((k) => {
-      const ps = P.filter((pt) => pt.series === k).sort((a, b) => a.size - b.size);
-      if (!ps.length) return '';
-      const col = slot(k);
-      const path = ps.length > 1 ? `<path d="${ps.map((pt, i) => `${i ? 'L' : 'M'}${X(pt.size).toFixed(1)},${Y(pt.y).toFixed(1)}`).join('')}" class="sc-line" style="stroke:${col}"/>` : '';
-      const rings = ps.flatMap((pt) => (pt.inits.length > 1 ? pt.inits.map((i) => `<circle cx="${X(pt.size)}" cy="${Y(i.y)}" r="3" class="sc-init" style="stroke:${col}"/>`) : [])).join('');
-      const dots = ps.map((pt) => {
-        const tipTxt = `${k} · ${pt.sizeLabel}\n${st.y === 'raw' ? 'gap to raw' : dimShort(d.id)} ${fmt(pt.y)}${pt.inits.length > 1 ? ` (mean of ${pt.inits.length} init seeds)` : ''}\n`
-          + pt.inits.map((i) => `  ${i.init === 'default' ? 'default seed' : `seed ${i.init}`}: ${fmt(i.y)}  (${i.n} audits)`).join('\n')
-          + (st.y === 'raw' ? `\nraw at this size: ${pt.base.toFixed(2)}` : '');
-        return `<circle cx="${X(pt.size)}" cy="${Y(pt.y)}" r="5" class="sc-dot" style="fill:${col}"/>
-          <circle cx="${X(pt.size)}" cy="${Y(pt.y)}" r="12" class="sc-hit" data-tip="${esc(tipTxt)}"/>`;
-      }).join('');
-      const last = ps[ps.length - 1];
-      return path + rings + dots + `<text x="${X(last.size) + 12}" y="${Y(last.y) + 4}" class="sc-lab" data-ly="${Y(last.y)}">${esc(k)}</text>`;
-    }).join('');
-    const svg = `<svg class="sc-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(dimShort(d.id))} by model size">
-      ${grid}<line x1="${ml}" x2="${W - mr}" y1="${H - mb}" y2="${H - mb}" class="sc-axis"/>${xt}
-      <text x="${(ml + W - mr) / 2}" y="${H - 6}" class="sc-tick" text-anchor="middle">model size (log scale)</text>
-      ${lines}</svg>`;
-    const legend = `<div class="sc-legend">${allSeries.filter((k) => !(st.y === 'raw' && k.split(' ').pop() === 'raw')).map((k) =>
-      `<a href="#" class="sc-pill${st.hide.has(k) ? ' off' : ''}" data-sc-hide="${esc(k)}" data-tip="click to ${st.hide.has(k) ? 'show' : 'hide'}"><i style="background:${slot(k)}"></i>${esc(k)}</a>`).join('')}</div>`;
-    // table view: conditions are rows, sizes are columns
-    const table = `<div class="scroll-x"><table class="list arith"><thead><tr><th>condition</th>
-      ${sizes.map((v) => `<th class="num">${esc([...pts.values()].find((pt) => pt.size === v).sizeLabel)}</th>`).join('')}</tr></thead><tbody>
-      ${allSeries.filter((k) => !(st.y === 'raw' && k.split(' ').pop() === 'raw')).map((k) => `<tr class="${st.hide.has(k) ? 'faint' : ''}"><td class="model"><i class="sc-sw" style="background:${slot(k)}"></i>${esc(k)}</td>
-        ${sizes.map((v) => { const pt = pts.get(`${k}\u0000${v}`); return `<td class="num">${pt && pt.y != null
-          ? `<b>${fmt(pt.y)}</b>${pt.inits.length > 1 ? ` <span class="meta">${pt.inits.length} seeds, ${fmt(Math.min(...pt.inits.map((i) => i.y)))}…${fmt(Math.max(...pt.inits.map((i) => i.y)))}</span>` : ''}` : '<span class="meta">—</span>'}</td>`; }).join('')}</tr>`).join('')}
-      </tbody></table></div>`;
-    $('#view').innerHTML = `${controls}
-      <h2>Scaling<span class="hint">${esc(dimShort(d.id))}${st.y === 'raw' ? ', gap to raw at the same size' : ''} · ${hiBetter ? 'higher' : 'lower'} is better · mean over ${common.length} scenario seeds · big dot = mean over init seeds, rings = single init seeds</span></h2>
-      ${legend}<div class="box sc-box">${svg}</div>${table}
-      <div class="legend"><span>Each model's score is the plain mean over the scenario seeds every plotted model was audited on
-        (${common.length}: ${common.map(esc).join(', ')})${dropped.length ? `; left out because some model lacks them: ${dropped.map(esc).join(', ')}` : ''}.
-        Sizes and lines come from aliases named <code>&lt;family&gt;_&lt;size&gt;_&lt;condition&gt;[_seed&lt;N&gt;]_sft</code>;
-        a <code>_seed&lt;N&gt;</code> model is another init seed of the same point.${skipped.length ? ` ${skipped.length} selected models have no size in their name and are not plotted.` : ''}
-        Pick the scenario seeds in the filter bar to average over a different set.</span></div>`;
-    // keep end labels apart
-    const labs = [...$('#view').querySelectorAll('.sc-lab')].sort((a, b) => +a.dataset.ly - +b.dataset.ly);
-    let prev = -1e9;
-    labs.forEach((el) => { const y = Math.max(+el.dataset.ly + 4, prev + 14); el.setAttribute('y', y); prev = y; });
+      return per.some((v) => v == null) || !per.length ? null : mean(per);
+    };
+    const card = (d) => {
+      const hiBetter = !!d.higher_better && !d.inverted;
+      const sc = new Map(models.map((m) => [m.alias, scoreOf(m.alias, d)]));
+      const famPts = (fam) => sizes.map((size) => {
+        const ms = models.filter((m) => m.family === fam && m.size === size && sc.get(m.alias) != null);
+        const main = ms.find((m) => m.replicate === 'main');
+        const reps = ms.filter((m) => m.replicate !== 'main');
+        const y = st.seeds === 'avg' ? (ms.length ? mean(ms.map((m) => sc.get(m.alias))) : null) : main ? sc.get(main.alias) : null;
+        return { size, y, n: st.seeds === 'avg' ? ms.length : 1, reps: st.seeds === 'reps' ? reps.map((m) => ({ seed: m.replicate, y: sc.get(m.alias) })) : [] };
+      });
+      const series = new Map(allFams.map((f) => [f, famPts(f)]));
+      if (st.view === 'win') {
+        // raw docs of the same variant (raw for asst/ua, raw_rawanneal if it exists, else raw)
+        const refOf = (fam) => { const { variant } = scParts(fam); return series.has(variant ? `raw_${variant}` : 'raw') ? (variant ? `raw_${variant}` : 'raw') : 'raw'; };
+        const base = new Map([...series].map(([f, ps]) => [f, ps.map((p) => p.y)]));
+        series.forEach((ps, f) => {
+          const r = base.get(refOf(f));
+          ps.forEach((p, i) => {
+            const b = r ? r[i] : null;
+            const w = (v) => (v == null || b == null ? null : (hiBetter ? v - b : b - v));
+            p.y = w(p.y); p.reps = p.reps.map((q) => ({ ...q, y: w(q.y) }));
+          });
+        });
+      }
+      const shown = allFams.filter((f) => famOn.has(f) && !(st.view === 'win' && scParts(f).cond === 'raw'));
+      const vals = shown.flatMap((f) => series.get(f).flatMap((p) => [p.y, ...p.reps.map((q) => q.y)])).filter((v) => v != null);
+      const title = `<h4>${esc(dimShort(d.id))} <span class="sc-info" data-tip="${esc(`${d.desc || d.id}\n${st.view === 'win' ? 'positive = better than raw docs' : hiBetter ? 'higher = better' : 'lower = better'}`)}">info</span></h4>`;
+      if (!vals.length) return `<div class="sc-card">${title}<div class="sc-empty">No data for this selection.</div></div>`;
+      const W = 460, H = 280, ml = 40, mr = 34, mt = 10, mb = 28;
+      let lo = Math.min(...vals, st.view === 'win' ? 0 : Infinity), hi = Math.max(...vals, st.view === 'win' ? 0 : -Infinity);
+      const pad = Math.max(0.05, (hi - lo) * 0.1); lo -= pad; hi += pad;
+      const step = [0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5].find((s) => (hi - lo) / s <= 6) || 5;
+      const X = (v) => ml + (W - ml - mr) * (sizes.length > 1 ? (Math.log(v) - Math.log(sizes[0])) / (Math.log(sizes[sizes.length - 1]) - Math.log(sizes[0])) : 0.5);
+      const Y = (v) => mt + (H - mt - mb) * (1 - (v - lo) / (hi - lo));
+      const ticks = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(3));
+      const dec = step < 0.1 ? 2 : step < 1 ? (step === 0.25 ? 2 : 1) : 0;
+      const fmt = (v) => (st.view === 'win' && v > 0 ? '+' : '') + v.toFixed(2);
+      let g = ticks.map((v) => `<line x1="${ml}" x2="${W - mr + 20}" y1="${Y(v)}" y2="${Y(v)}" class="sc-g${st.view === 'win' && v === 0 ? ' sc-z' : ''}"/><text x="${ml - 6}" y="${Y(v) + 4}" text-anchor="end" class="sc-t">${v.toFixed(dec)}</text>`).join('');
+      g += sizes.map((v) => `<line x1="${X(v)}" x2="${X(v)}" y1="${mt}" y2="${H - mb}" class="sc-g"/><text x="${X(v)}" y="${H - mb + 18}" text-anchor="middle" class="sc-t">${SC_SIZE_LABEL[v] || `${v}B`}</text>`).join('');
+      shown.forEach((f, fi) => {
+        const s = scStyle(f), ps = series.get(f).filter((p) => p.y != null);
+        if (ps.length > 1) g += `<path d="${ps.map((p, i) => `${i ? 'L' : 'M'}${X(p.size).toFixed(1)} ${Y(p.y).toFixed(1)}`).join('')}" class="sc-l" style="stroke:${s.color}"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''}/>`;
+        ps.forEach((p) => {
+          const tip = `${scLabel(f)} · ${SC_SIZE_LABEL[p.size]}\n${fmt(p.y)}${st.seeds === 'avg' && p.n > 1 ? ` (mean of ${p.n} init seeds)` : ''}`;
+          g += scMarker(s.point, X(p.size), Y(p.y), 4.5, s.color, false) + `<circle cx="${X(p.size)}" cy="${Y(p.y)}" r="10" class="sc-hit" data-tip="${esc(tip)}"/>`;
+          p.reps.filter((q) => q.y != null).forEach((q) => {
+            const x = X(p.size) + 12 + (fi % 2) * 7;
+            g += scMarker(s.point, x, Y(q.y), 4, s.color, true) + `<circle cx="${x}" cy="${Y(q.y)}" r="8" class="sc-hit" data-tip="${esc(`${scLabel(f)} · ${SC_SIZE_LABEL[p.size]} · init seed ${q.seed}\n${fmt(q.y)}`)}"/>`;
+          });
+        });
+      });
+      return `<div class="sc-card">${title}<svg class="sc-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(dimShort(d.id))} by model size">${g}</svg></div>`;
+    };
+    const cards = dimOn.length && seeds.length && shownAny(allFams, famOn)
+      ? dimOn.map((id) => card(dimById(id))).join('')
+      : `<div class="sc-empty">${!seeds.length ? 'Select at least one Petri seed.' : !dimOn.length ? 'Select at least one dimension.' : 'Switch on at least one family.'}</div>`;
+    $('#view').innerHTML = `${bar}<div class="sc-grid">${cards}</div>`;
   }
+  const shownAny = (fams, on) => fams.some((f) => on.has(f));
+  // Scaling controls: chips toggle, selects switch, reset clears the stored state
+  $('#view').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-scf],[data-scp],[data-scd],[data-scp-all],[data-scp-none],[data-sc-reset]');
+    if (!t) return;
+    e.preventDefault();
+    let st = scState();
+    const flip = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : arr.concat([v]));
+    if (t.dataset.scf != null) st.fams = flip(st.fams, t.dataset.scf);
+    else if (t.dataset.scd != null) st.dims = flip(st.dims, t.dataset.scd);
+    else if (t.dataset.scp != null) st.offSeeds = flip(st.offSeeds, t.dataset.scp);
+    else if (t.hasAttribute('data-scp-all')) st.offSeeds = [];
+    else if (t.hasAttribute('data-scp-none')) st.offSeeds = [...$('#view').querySelectorAll('[data-scp]')].map((x) => x.dataset.scp);
+    else if (t.hasAttribute('data-sc-reset')) st = scDefaults();
+    scSave(st);
+    renderScaling();
+  });
+  $('#view').addEventListener('change', (e) => {
+    const s = e.target.closest('select[data-scs]');
+    if (!s) return;
+    const st = scState();
+    st[s.dataset.scs] = s.value;
+    scSave(st);
+    renderScaling();
+  });
 
   // Which differences are real -> a matrix, one cell per pair. Click a cell for the
   // seed-by-seed breakdown behind it.
@@ -1899,7 +1949,7 @@
     const parts = raw.split('/').map((p) => { try { return decodeURIComponent(p); } catch (e) { return p; } });
     const view = parts[0] || 'overview';
     document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.view === (view === 't' ? 'transcripts' : view)));
-    $('#filters').hidden = !(view === 'overview' || view === 'transcripts' || view === 'stats' || view === 'anova' || view === 'scaling');
+    $('#filters').hidden = !(view === 'overview' || view === 'transcripts' || view === 'stats' || view === 'anova');
     if (view !== 'seeds') SF = null;   // seeds-tab handlers go inert off the tab
     const p = Promise.resolve().then(() => {
       if (view === 'overview') return renderOverview();
@@ -1908,7 +1958,7 @@
       if (view === 'compare') return renderCompare(parts.slice(1));
       if (view === 'stats') return renderStats(query);
       if (view === 'anova') return renderAnova(query);
-      if (view === 'scaling') return renderScaling(query);
+      if (view === 'scaling') return renderScaling();
       if (view === 'seeds') return renderSeeds(parts.slice(1), query);
       if (view === 'rubric') return renderRubric(parts.slice(1));
       $('#view').innerHTML = `<div class="empty">unknown view <code>${esc(view)}</code></div>`;
@@ -1967,25 +2017,13 @@
     const row = e.target.closest('tr.clickable[data-hash]');
     if (row && !e.target.closest('a')) { location.hash = row.dataset.hash; }
   });
-  document.addEventListener('click', (e) => {   // Scaling legend: show / hide a line
-    const pill = e.target.closest('[data-sc-hide]');
-    if (!pill) return;
-    e.preventDefault();
-    const [path, qs] = location.hash.split('?');
-    const q = new URLSearchParams(qs || '');
-    const hide = new Set((q.get('hide') || '').split(',').filter(Boolean));
-    const k = pill.dataset.scHide;
-    if (hide.has(k)) hide.delete(k); else hide.add(k);
-    if (hide.size) q.set('hide', [...hide].join(',')); else q.delete('hide');
-    location.hash = `${path}${q.toString() ? `?${q}` : ''}`;
-  });
   document.addEventListener('change', (e) => {
     if (e.target.id === 'alldims') { S.allDims = e.target.checked; route(); }
     const stSel = e.target.closest('select[data-st]');
     if (stSel) {
       const cur = new URLSearchParams(location.hash.split('?')[1] || '');
       const q = new URLSearchParams();
-      ['dim', 'scope', 'pair', 'corr', 'units', 'y', 'hide'].forEach((k) => {
+      ['dim', 'scope', 'pair', 'corr', 'units'].forEach((k) => {
         const v = k === stSel.dataset.st ? stSel.value : (cur.get(k) || '');
         if (v) q.set(k, v);
       });

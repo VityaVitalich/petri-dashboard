@@ -29,6 +29,8 @@ Never hand-edit or delete files in `data/`.
 3. Preview: `./serve.sh` → http://localhost:8765. Check the Overview, a Transcript, Compare
    and Seeds views, in light and dark (`?theme=dark`). Describe what changed to the user in
    plain words, with a screenshot if you can take one.
+   Bump the `?v=` on `app.js` and `style.css` in `index.html`: Pages caches them for 10 min, and a
+   new index.html with an old app.js shows "unknown view".
 4. Commit only the files you changed (explicit paths, never `git add -A`), push the branch
    to `origin`, then `gh pr create --repo VityaVitalich/petri-dashboard --base main`.
    One topic per PR. Data refreshes go through `deploy.sh`, not into a code PR.
