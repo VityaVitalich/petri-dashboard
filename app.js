@@ -751,6 +751,70 @@
     return { N, rows, resid: { ss: rssFull, df: dfE, ms: mse }, ssTot, adj, nModels: ms.length, nSeeds: ss_.length, nCells };
   }
 
+  // Training (init) seeds of one model: `<cond>_seed<N>_sft` is init seed N of `<cond>_sft`;
+  // an alias without the suffix is that condition's default init seed.
+  const initSplit = (alias) => {
+    const m = alias.match(/^(.+)_seed(\d+)(_sft)?$/);
+    return m ? { cond: m[1] + (m[3] || ''), init: m[2] } : { cond: alias, init: 'default' };
+  };
+  // RSS of the additive fit y = mu + a[kA] + b[kB], by backfitting (copes with empty cells
+  // and with kA nested in kB's levels; only the RSS is used, so the effects need no centring).
+  function rssAdd2(obs, kA, kB) {
+    const a = new Map(), b = new Map(), mu = mean(obs.map((o) => o.y));
+    const va = obs.map(kA), vb = obs.map(kB);
+    for (let it = 0; it < 3000; it++) {
+      let delta = 0;
+      const upd = (eff, keys, other, otherKeys) => {
+        const acc = new Map();
+        obs.forEach((o, i) => { const c = acc.get(keys[i]) || [0, 0]; c[0] += o.y - mu - (other.get(otherKeys[i]) || 0); c[1] += 1; acc.set(keys[i], c); });
+        acc.forEach(([s, n], k) => { const v = s / n; delta = Math.max(delta, Math.abs(v - (eff.get(k) || 0))); eff.set(k, v); });
+      };
+      upd(a, va, b, vb);
+      upd(b, vb, a, va);
+      if (delta < 1e-10) break;
+    }
+    return obs.reduce((acc, o, i) => acc + (o.y - mu - a.get(va[i]) - b.get(vb[i])) ** 2, 0);
+  }
+  // Nested mixed ANOVA with init seeds as replicates of a condition:
+  //   score ~ condition + scenario + condition × scenario + init(condition) + init × scenario(condition) + epochs.
+  // Init seed is a random factor, so a condition effect is judged against how much init seeds of the
+  // same condition differ (init(condition)), not against epoch noise; condition × scenario and
+  // init(condition) are judged against init × scenario. Sums of squares from nested residual sums
+  // of squares (Type II for the crossed terms), so unbalanced designs and single-seed conditions work.
+  function anovaNested(obs) {
+    const N = obs.length;
+    const rss1 = (key) => {
+      const g = new Map();
+      obs.forEach((o) => { const k = key(o); const c = g.get(k) || [0, 0]; c[0] += o.y; c[1] += 1; g.set(k, c); });
+      return obs.reduce((acc, o) => { const [s, n] = g.get(key(o)); return acc + (o.y - s / n) ** 2; }, 0);
+    };
+    const C = (o) => o.c, M = (o) => o.m, Sx = (o) => o.s;
+    const CS = (o) => `${o.c}\u0000${o.s}`, MS = (o) => `${o.m}\u0000${o.s}`;
+    const n = (key) => new Set(obs.map(key)).size;
+    const nC = n(C), nM = n(M), nS = n(Sx), nCS = n(CS), nMS = n(MS);
+    const rS = rss1(Sx), rC = rss1(C), rCS = rssAdd2(obs, C, Sx), rMS = rssAdd2(obs, M, Sx);
+    const rMxCS = rssAdd2(obs, M, CS), rFull = rss1(MS);
+    const mk = (name, ss, df, tip) => ({ name, ss: Math.max(0, ss), df, ms: df > 0 ? Math.max(0, ss) / df : null, tip });
+    const T = {
+      cond: mk('condition', rS - rCS, nC - 1, 'do the conditions differ, beyond what changing the init seed alone does?'),
+      scen: mk('scenario', rC - rCS, nS - 1, 'do the scenario seeds differ (expected: they probe different things)?'),
+      init: mk('init seed (within condition)', rCS - rMS, nM - nC, 'how much retraining the same condition with another init seed moves its overall score'),
+      cxs: mk('condition × scenario', rMS - rMxCS, nCS - nC - nS + 1, 'does the gap between conditions change from scenario to scenario, beyond init-seed noise?'),
+      ixs: mk('init seed × scenario', rMxCS - rFull, nMS - nCS - nM + nC, 'does an init seed move some scenarios and not others?'),
+      res: mk('residual (epochs)', rFull, N - nMS, 'repeat audits of the same model on the same scenario'),
+    };
+    // error term for each test; when a term has no df (no condition with two init seeds) fall back one level
+    const err = (t) => (t.df > 0 ? t : T.res);
+    const tests = [['cond', err(T.init)], ['scen', err(T.ixs)], ['cxs', err(T.ixs)], ['init', err(T.ixs)], ['ixs', T.res]];
+    tests.forEach(([k, e]) => {
+      const t = T[k];
+      t.errName = e.name; t.dfErr = e.df;
+      t.F = e.ms && t.df > 0 && e.df > 0 ? t.ms / e.ms : null;
+      t.p = t.F == null ? null : t.F <= 0 ? 1 : ibeta(e.df / 2, t.df / 2, e.df / (e.df + t.df * t.F));
+    });
+    return { N, T, nC, nM, nS, nCS, nMS };
+  }
+
   // ---- Tukey HSD: the studentized range distribution, by numerical integration.
   // P(Q < q; k, df) = ∫ f_s(s) · k ∫ φ(z) [Φ(z) − Φ(z − q s)]^(k−1) dz ds, where s = √(χ²_df / df).
   const normCdf = (x) => {
@@ -821,22 +885,57 @@
     const pool = st.scope ? ts.filter((t) => t.theme === st.scope) : ts;
     const sel = (key, label, opts, val, tip) => `<label class="ctl" data-tip="${esc(tip)}">${label}
       <select data-st="${key}">${opts.map((o) => `<option value="${esc(o.v)}"${o.v === val ? ' selected' : ''}>${esc(o.l)}</option>`).join('')}</select></label>`;
-    const controls = `<div class="ctls">
+    const controlsBase = `<div class="ctls">
       ${sel('dim', 'dimension', dims().map((x) => ({ v: x.id, l: dimShort(x.id) })), st.dim, 'which judge score to analyse')}
       ${sel('scope', 'seeds', [{ v: '', l: 'all themes' }].concat(ths.map((t) => ({ v: t, l: themeTitle(t) }))), st.scope,
             'restrict to one theme')}
       ${sel('corr', 'pairwise correction', [{ v: 'fdr', l: 'FDR (Benjamini-Hochberg)' }, { v: 'tukey', l: 'Tukey (all pairs, strict)' }], st.corr,
             'FDR: of the pairs called different, about 5% may be wrong; suits a preselected set of models. Tukey: the chance of even one wrong call across all pairs stays at 5%; stricter.')}
     </div>`;
-    const obs = pool.map((t) => ({ m: t.alias, s: t.seed, y: f(t) })).filter((o) => typeof o.y === 'number');
+    const obs = pool.map((t) => ({ m: t.alias, s: t.seed, y: f(t), ...initSplit(t.alias) }))
+      .map((o) => ({ m: o.m, s: o.s, y: o.y, c: o.cond, i: o.init })).filter((o) => typeof o.y === 'number');
+    // conditions that were trained with more than one init seed among the selected models
+    const initsOf = new Map();
+    obs.forEach((o) => { if (!initsOf.has(o.c)) initsOf.set(o.c, new Set()); initsOf.get(o.c).add(o.m); });
+    const nMulti = [...initsOf.values()].filter((s) => s.size > 1).length;
+    st.units = query.get('units') || (nMulti ? 'init' : 'model');
+    const pooled = st.units === 'init' && nMulti > 0;
+    const controls = controlsBase.replace('</div>', `${sel('units', 'init seeds', [
+      { v: 'init', l: 'replicates of a condition' }, { v: 'model', l: 'separate models' }], st.units,
+      'replicates: <cond>_seed<N>_sft and <cond>_sft are the same condition trained from different init seeds; the condition is tested against how much those seeds differ. Separate: every checkpoint is its own model and only epoch noise counts.')}</div>`);
     const A = obs.length ? anova2(obs) : null;
-    if (!A || A.nModels < 2 || A.nSeeds < 2 || !(A.resid.df > 0)) {
+    if (!A || A.nModels < 2 || A.nSeeds < 2 || !(A.resid.df > 0) || (pooled && initsOf.size < 2)) {
       return void ($('#view').innerHTML = controls
         + '<div class="empty">Select at least two models and two seeds with repeated audits in the filter bar above.</div>');
     }
     const pf = (v) => (v == null ? '—' : v < 0.001 ? '<0.001' : v.toFixed(3));
     const nf = (v, k = 2) => (v == null ? '—' : v.toFixed(k));
-    const table = `<h2>Two-way ANOVA<span class="hint">${esc(dimShort(d.id))} ~ model + seed + model × seed · Type II sums of squares · ${A.N} audits, ${A.nModels} models, ${A.nSeeds} seeds, ${A.nCells} model×seed cells</span></h2>
+    const NA = pooled ? anovaNested(obs) : null;
+    const nestedTable = () => {
+      const T = NA.T, multi = [...initsOf].filter(([, s]) => s.size > 1);
+      const mixRuns = [...new Set(pool.map((t) => `${t.alias}\u0000${t.run_id}`))].length > NA.nM;
+      return `<h2>Nested ANOVA, init seeds as replicates<span class="hint">${esc(dimShort(d.id))} ~ condition + scenario + condition × scenario + init seed(condition) + init seed × scenario · ${NA.N} audits, ${NA.nC} conditions, ${NA.nM} trained models, ${NA.nS} scenario seeds</span></h2>
+      <div class="scroll-x"><table class="list arith"><thead><tr>
+        <th>source</th><th class="num">SS</th><th class="num">df</th><th class="num">mean square</th>
+        <th data-tip="the term each F is divided by: a random factor's variance, not epoch noise, wherever the claim is about trained models">tested against</th>
+        <th class="num">F</th><th class="num">p</th></tr></thead><tbody>
+      ${['cond', 'cxs', 'init', 'ixs', 'scen', 'res'].map((k) => { const r = T[k]; return `<tr class="${k === 'res' ? 'faint' : ''}">
+        <td class="model" data-tip="${esc(r.tip)}">${k === 'cond' ? '<b>condition</b>' : esc(r.name)}</td><td class="num">${nf(r.ss)}</td><td class="num">${r.df}</td>
+        <td class="num">${nf(r.ms)}</td><td class="meta">${r.errName ? `${esc(r.errName)} <span class="meta">(df ${r.dfErr})</span>` : ''}</td>
+        <td class="num">${nf(r.F)}</td><td class="num ${r.p != null && r.p < 0.05 ? 'okc' : ''}">${r.errName ? `<b>${pf(r.p)}</b>` : ''}</td></tr>`; }).join('')}
+      </tbody></table></div>
+      <div class="legend"><span>A <b>condition</b> is one training recipe; <code>_seed&lt;N&gt;</code> checkpoints of it are retrainings from
+        another init seed (no suffix = its default seed). ${multi.length} of ${NA.nC} conditions have several init seeds
+        (${multi.map(([c, s]) => `${esc(c)} ×${s.size}`).join(', ')}); single-seed conditions still get a mean, but only the
+        multi-seed ones tell how much an init seed moves the score. <b>condition</b> is tested against <b>init seed</b>: two recipes
+        count as different only if they differ by more than retraining one recipe does, which is the claim a paper makes. With
+        ${T.init.df} df for that yardstick the test is honest but weak. <b>init seed</b> and <b>condition × scenario</b> are tested
+        against <b>init seed × scenario</b>; epoch noise (residual) only judges that last term. Init seeds are treated as random,
+        scenario seeds as fixed. Sums of squares are Type II from nested fits, so missing epochs and single-seed conditions are
+        handled.${mixRuns ? ' <b>Note:</b> some trained models have audits from more than one run (e.g. an older harness); filter the runs so each has one, or the run difference lands in the init-seed term.' : ''}
+        Scores are 1–10 rubric values and often bimodal, so treat p-values near 0.05 as borderline.</span></div>`;
+    };
+    const table = pooled ? nestedTable() : `<h2>Two-way ANOVA<span class="hint">${esc(dimShort(d.id))} ~ model + seed + model × seed · Type II sums of squares · ${A.N} audits, ${A.nModels} models, ${A.nSeeds} seeds, ${A.nCells} model×seed cells</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr>
         <th>source</th><th class="num">SS</th><th class="num">df</th><th class="num">mean square</th><th class="num">F</th><th class="num">p</th>
         <th class="num" data-tip="partial eta squared: SS / (SS + residual SS), the share of the variance left after the other terms that this term explains">partial η²</th>
@@ -852,9 +951,21 @@
         If the interaction is significant, read the model row together with the per-seed tables, because then no single
         model gap describes every seed. The F-tests assume roughly normal residuals with equal spread; the scores are 1–10
         rubric values and often bimodal, so treat p-values near 0.05 as borderline.</span></div>`;
-    const adj = A.adj.slice().sort((x, y) => (hiBetter ? y.adj - x.adj : x.adj - y.adj));
+    // Pooled: a condition's mean is the plain average of its init seeds' scenario-adjusted means.
+    // Var(one model's mean) = MS_init / n_audits under the nested model, so the condition mean's
+    // variance is MS_init · Σ(1/n) / k²; carrying that as an effective audit count n lets the
+    // pairwise code below run unchanged, with MS_init and its df as the yardstick.
+    const yard = pooled ? (NA.T.init.df > 0 ? NA.T.init : NA.T.res) : null;
+    const units = !pooled ? A.adj : [...initsOf.keys()].map((c) => {
+      const ms_ = A.adj.filter((x) => initSplit(x.m).cond === c);
+      const k = ms_.length, ys = obs.filter((o) => o.c === c).map((o) => o.y);
+      return { m: c, adj: mean(ms_.map((x) => x.adj)), raw: mean(ys), n: k * k / ms_.reduce((a, x) => a + 1 / x.n, 0),
+        nAud: ys.length, k: new Set(obs.filter((o) => o.c === c).map((o) => o.s)).size,
+        inits: ms_.map((x) => ({ init: initSplit(x.m).init, adj: x.adj })).sort((x, y) => (x.init === 'default' ? -1 : y.init === 'default' ? 1 : x.init - y.init)) };
+    });
+    const adj = units.slice().sort((x, y) => (hiBetter ? y.adj - x.adj : x.adj - y.adj));
     // Tukey-Kramer on the adjusted means: every pair at once, family-wise 95%.
-    const K = adj.length, dfE = A.resid.df, mse = A.resid.ms;
+    const K = adj.length, dfE = pooled ? yard.df : A.resid.df, mse = pooled ? yard.ms : A.resid.ms;
     const qcrit = qtukey(0.95, K, dfE);
     const byM = new Map(adj.map((x) => [x.m, x]));
     const pairs = [];
@@ -884,7 +995,23 @@
     const letters = cld(adj.map((x) => x.m), sigP);
     const nSig = pairs.filter((r) => r.p < 0.05).length;
     const typHsd = mean(pairs.map((r) => r.hsd));
-    const means = `<h2>Model means adjusted for seed<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first · models sharing a letter are not significantly different (${st.corr === 'tukey' ? 'Tukey, family-wise 95%' : 'FDR 5%, Benjamini-Hochberg'})</span></h2>
+    const means = pooled ? `<h2>Condition means adjusted for scenario<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first · conditions sharing a letter are not significantly different (${st.corr === 'tukey' ? 'Tukey, family-wise 95%' : 'FDR 5%, Benjamini-Hochberg'}) · yardstick: ${esc(yard.name)}, ${dfE} df</span></h2>
+      <div class="scroll-x"><table class="list arith"><thead><tr><th class="num">#</th><th>condition</th>
+        <th class="num" data-tip="each init seed's scenario-adjusted mean, then averaged over init seeds with equal weight">adjusted mean</th>
+        <th data-tip="compact letter display: two conditions that share at least one letter are not significantly different under the selected correction">group</th>
+        <th data-tip="scenario-adjusted mean of each init seed of this condition; the spread here is what the condition test has to beat">per init seed</th>
+        <th class="num">raw mean</th><th class="num">audits</th></tr></thead><tbody>
+      ${adj.map((x, i) => `<tr><td class="num rk">${i + 1}</td><td class="model">${brk(x.m)}</td><td class="num"><b>${x.adj.toFixed(2)}</b></td>
+        <td><code>${esc(letters.get(x.m))}</code></td>
+        <td class="meta">${x.inits.map((s) => `${esc(s.init)} <b>${s.adj.toFixed(2)}</b>`).join(' · ')}</td>
+        <td class="num">${x.raw.toFixed(2)}</td><td class="num">${x.nAud}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="legend"><span>${st.corr === 'tukey' ? 'Tukey' : 'FDR (Benjamini-Hochberg)'}: a typical gap of about
+        <b>${typHsd.toFixed(2)}</b> points is needed to call two conditions different. The standard error comes from how far
+        init seeds of the same condition land apart (${esc(yard.name)} mean square ${yard.ms.toFixed(2)}, ${dfE} df), so a
+        condition with three init seeds is pinned down better than one with a single seed. ${nSig} of ${pairs.length} pairs are
+        different.</span></div>`
+    : `<h2>Model means adjusted for seed<span class="hint">${hiBetter ? 'higher' : 'lower'} is better · best first · models sharing a letter are not significantly different (${st.corr === 'tukey' ? 'Tukey, family-wise 95%' : 'FDR 5%, Benjamini-Hochberg'})</span></h2>
       <div class="scroll-x"><table class="list arith"><thead><tr><th class="num">#</th><th>model</th>
         <th class="num" data-tip="additive fit (model + seed) averaged over the seeds with equal weight, so a model that is missing a seed or has extra epochs on one is not tilted by it">adjusted mean</th>
         <th data-tip="compact letter display: two models that share at least one letter are not significantly different under the selected correction">group</th>
@@ -1683,7 +1810,7 @@
     if (stSel) {
       const cur = new URLSearchParams(location.hash.split('?')[1] || '');
       const q = new URLSearchParams();
-      ['dim', 'scope', 'pair', 'corr'].forEach((k) => {
+      ['dim', 'scope', 'pair', 'corr', 'units'].forEach((k) => {
         const v = k === stSel.dataset.st ? stSel.value : (cur.get(k) || '');
         if (v) q.set(k, v);
       });
