@@ -544,3 +544,11 @@ table.rank td.model { font-size: 13px; }
 .sc-l { fill: none; stroke-width: 2.5; stroke-linejoin: round; }
 .sc-hit { fill: transparent; }
 .sc-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 40px 20px; }
+.sc-top { align-items: flex-start; }
+.sc-top .sc-key { padding-top: 5px; }
+.sc-seedgroups { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.sc-grp { font-weight: 600; background: transparent; }
+.sc-grp.part { opacity: 0.75; }
+.sc-chip .sc-x { color: var(--muted); border: none; background: none; cursor: pointer; padding: 0 0 0 2px; font-size: 15px; line-height: 1; }
+.sc-add { display: inline-flex; gap: 6px; align-items: center; }
+.sc-add select { background: var(--bg); color: var(--ink); border: 1px solid var(--axis); border-radius: 4px; padding: 3px 6px; font-size: 13px; }
