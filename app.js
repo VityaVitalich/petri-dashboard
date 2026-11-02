@@ -1138,6 +1138,8 @@
   const SC_VARIANT_POINT = { '': 'circle', rawanneal: 'rect', tokmatch: 'triangle', tokmatchog: 'diamond' };
   const SC_DEFAULT_FAMILIES = ['asst', 'ua', 'raw', 'asst_rawanneal', 'ua_rawanneal'];
   const SC_DEFAULT_DIMS = [CGP, 'concerning', 'principled_resistance', 'capability_defect'];
+  const SC_DEFAULT_COMPARISONS = [['asst', 'raw'], ['ua', 'raw'], ['asst', 'asst_rawanneal'], ['ua', 'ua_rawanneal']];
+  const SC_CMP_COLORS = ['#2563eb', '#dc2626', '#059669', '#9333ea', '#ea580c', '#0891b2', '#be185d', '#4b5563'];
   const SC_LS = 'petri:scaling:v1';
   function scParse(alias) {
     const m = alias.match(/^1pp_(0p5b|1b|1p7b)_(asst|ua|raw)(?:_(.+))?_sft$/);
@@ -1162,7 +1164,8 @@
     return `<svg width="30" height="12" aria-hidden="true"><line x1="1" x2="29" y1="6" y2="6" stroke="${s.color}" stroke-width="2.5"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''}/>${scMarker(s.point, 15, 6, 4, s.color, false)}</svg>`;
   };
   function scDefaults() {
-    return { view: 'abs', seeds: 'reps', fams: [...SC_DEFAULT_FAMILIES], dims: [...SC_DEFAULT_DIMS], offSeeds: [] };
+    return { view: 'abs', seeds: 'reps', fams: [...SC_DEFAULT_FAMILIES], dims: [...SC_DEFAULT_DIMS], offSeeds: [],
+      cmps: SC_DEFAULT_COMPARISONS.map(([t, r]) => ({ t, r, on: true })) };
   }
   function scState() {
     const d = scDefaults();
@@ -1193,16 +1196,25 @@
       `<option value="${v}"${st[key] === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
     const chip = (attr, v, on, inner, tip) => `<span class="sc-chip${on ? '' : ' off'}" ${attr}="${esc(v)}" role="button" aria-pressed="${on}"${tip ? ` data-tip="${esc(tip)}"` : ''}>${inner}</span>`;
     const bar = `<div class="box sc-bar">
-      <div class="sc-row">${sel('view', 'Show', [['abs', 'Absolute values'], ['win', 'Win over raw docs (same size)']])}
+      <div class="sc-row">${sel('view', 'Show', [['abs', 'Absolute values'], ['win', 'Win over reference']])}
         ${sel('seeds', 'Init seeds', [['reps', 'Main run + replicates'], ['avg', 'Average over init seeds'], ['main', 'Main run only']])}
         <span class="sc-spacer"></span><button type="button" class="sc-btn" data-sc-reset>Reset</button></div>
-      <div class="sc-row"><span class="sc-key">Families</span><span class="sc-chips">${allFams.map((f) => chip('data-scf', f, famOn.has(f), `${scGlyph(f)}${esc(scLabel(f))}`)).join('')}</span></div>
-      <div class="sc-row"><span class="sc-key">Petri seeds</span><span class="sc-chips">${common.map((s) => chip('data-scp', s, !offSeeds.has(s), esc(s), seedOf(s).probes || '')).join('')}
-        <a href="#" class="sc-link" data-scp-all>all</a><a href="#" class="sc-link" data-scp-none>none</a></span></div>
+      ${st.view === 'win' ? `<div class="sc-row"><span class="sc-key">Comparisons</span><span class="sc-chips">${st.cmps.map((c, i) =>
+        `<span class="sc-chip${c.on ? '' : ' off'}" data-scc="${i}" role="button" aria-pressed="${c.on}">${cmpGlyph(i)}${esc(scLabel(c.t))} <b>vs</b> ${esc(scLabel(c.r))}<button type="button" class="sc-x" data-scc-del="${i}" aria-label="remove">×</button></span>`).join('')}
+        <span class="sc-add"><select id="sc-add-t">${allFams.map((f) => `<option value="${esc(f)}">${esc(scLabel(f))}</option>`).join('')}</select><span>vs</span>
+          <select id="sc-add-r">${allFams.map((f) => `<option value="${esc(f)}"${f === 'raw' ? ' selected' : ''}>${esc(scLabel(f))}</option>`).join('')}</select>
+          <button type="button" class="sc-btn" data-scc-add>+ add</button></span></span></div>`
+      : `<div class="sc-row"><span class="sc-key">Families</span><span class="sc-chips">${allFams.map((f) => chip('data-scf', f, famOn.has(f), `${scGlyph(f)}${esc(scLabel(f))}`)).join('')}</span></div>`}
+      <div class="sc-row sc-top"><span class="sc-key">Petri seeds</span><span class="sc-seedgroups">${themesOf(common).map(([th, ss]) => {
+        const nOn = ss.filter((x) => !offSeeds.has(x)).length;
+        return `<span class="sc-chips"><span class="sc-chip sc-grp${nOn === ss.length ? '' : nOn ? ' part' : ' off'}" data-scg="${esc(th)}" role="button"
+          data-tip="${esc(`${themeTitle(th)}: click to ${nOn === ss.length ? 'drop' : 'select'} all ${ss.length}`)}">${esc(themeTitle(th))} <span class="meta">${nOn}/${ss.length}</span></span>${ss.map((x) =>
+          chip('data-scp', x, !offSeeds.has(x), esc(x), seedOf(x).probes || '')).join('')}</span>`; }).join('')}
+        <span class="sc-chips"><a href="#" class="sc-link" data-scp-all>all</a><a href="#" class="sc-link" data-scp-none>none</a></span></span></div>
       <div class="sc-row"><span class="sc-key">Dimensions</span><span class="sc-chips sc-dim-chips">${dimList.map((d) => chip('data-scd', d.id, dimOn.includes(d.id), esc(dimShort(d.id)), d.desc || d.id)).join('')}</span></div>
       <p class="sc-note">Final run of each 1PP +SFT model; a point is the mean over the ${seeds.length} selected Petri seeds of the model's per-seed mean.
         ${st.seeds === 'reps' ? 'Hollow markers = init-seed replicates (1.7B), a rough guide to retraining noise.' : st.seeds === 'avg' ? 'Points average the main run and its init-seed replicates.' : 'Init-seed replicates are left out.'}
-        ${st.view === 'win' ? 'Win = how much better than raw docs of the same size and variant group, in score points (positive = better).' : ''}</p></div>`;
+        ${st.view === 'win' ? 'Win = how much better the first family scores than the second at the same size, in score points (positive = better on that dimension). Replicates pair init seeds with the same number.' : ''}</p></div>`;
     // score of one model on one dimension over the selected seeds
     const scoreOf = (alias, d) => {
       const per = seeds.map((s) => {
@@ -1222,22 +1234,20 @@
         return { size, y, n: st.seeds === 'avg' ? ms.length : 1, reps: st.seeds === 'reps' ? reps.map((m) => ({ seed: m.replicate, y: sc.get(m.alias) })) : [] };
       });
       const series = new Map(allFams.map((f) => [f, famPts(f)]));
-      if (st.view === 'win') {
-        // raw docs of the same variant (raw for asst/ua, raw_rawanneal if it exists, else raw)
-        const refOf = (fam) => { const { variant } = scParts(fam); return series.has(variant ? `raw_${variant}` : 'raw') ? (variant ? `raw_${variant}` : 'raw') : 'raw'; };
-        const base = new Map([...series].map(([f, ps]) => [f, ps.map((p) => p.y)]));
-        series.forEach((ps, f) => {
-          const r = base.get(refOf(f));
-          ps.forEach((p, i) => {
-            const b = r ? r[i] : null;
-            const w = (v) => (v == null || b == null ? null : (hiBetter ? v - b : b - v));
-            p.y = w(p.y); p.reps = p.reps.map((q) => ({ ...q, y: w(q.y) }));
-          });
-        });
-      }
-      const shown = allFams.filter((f) => famOn.has(f) && !(st.view === 'win' && scParts(f).cond === 'raw'));
-      const vals = shown.flatMap((f) => series.get(f).flatMap((p) => [p.y, ...p.reps.map((q) => q.y)])).filter((v) => v != null);
-      const title = `<h4>${esc(dimShort(d.id))} <span class="sc-info" data-tip="${esc(`${d.desc || d.id}\n${st.view === 'win' ? 'positive = better than raw docs' : hiBetter ? 'higher = better' : 'lower = better'}`)}">info</span></h4>`;
+      // win view: one line per switched-on comparison, treatment minus reference, signed so positive = better
+      const cmps = st.cmps.map((c, i) => ({ ...c, i })).filter((c) => c.on && series.has(c.t) && series.has(c.r));
+      const win = (a, b) => (a == null || b == null ? null : (hiBetter ? a - b : b - a));
+      const cmpPts = (c) => series.get(c.t).map((p, k) => {
+        const q = series.get(c.r)[k];
+        const rq = new Map(q.reps.map((x) => [x.seed, x.y]));
+        return { size: p.size, y: win(p.y, q.y), n: Math.min(p.n, q.n),
+          reps: p.reps.filter((x) => rq.has(x.seed)).map((x) => ({ seed: x.seed, y: win(x.y, rq.get(x.seed)) })) };
+      });
+      const lines = st.view === 'win'
+        ? cmps.map((c) => ({ key: `${scLabel(c.t)} vs ${scLabel(c.r)}`, style: { color: SC_CMP_COLORS[c.i % SC_CMP_COLORS.length], dash: '', point: 'circle' }, pts: cmpPts(c) }))
+        : allFams.filter((f) => famOn.has(f)).map((f) => ({ key: scLabel(f), style: scStyle(f), pts: series.get(f) }));
+      const vals = lines.flatMap((l) => l.pts.flatMap((p) => [p.y, ...p.reps.map((q) => q.y)])).filter((v) => v != null);
+      const title = `<h4>${esc(dimShort(d.id))} <span class="sc-info" data-tip="${esc(`${d.desc || d.id}\n${st.view === 'win' ? 'positive = the first family of the pair is better' : hiBetter ? 'higher = better' : 'lower = better'}`)}">info</span></h4>`;
       if (!vals.length) return `<div class="sc-card">${title}<div class="sc-empty">No data for this selection.</div></div>`;
       const W = 460, H = 280, ml = 40, mr = 34, mt = 10, mb = 28;
       let lo = Math.min(...vals, st.view === 'win' ? 0 : Infinity), hi = Math.max(...vals, st.view === 'win' ? 0 : -Infinity);
@@ -1250,34 +1260,52 @@
       const fmt = (v) => (st.view === 'win' && v > 0 ? '+' : '') + v.toFixed(2);
       let g = ticks.map((v) => `<line x1="${ml}" x2="${W - mr + 20}" y1="${Y(v)}" y2="${Y(v)}" class="sc-g${st.view === 'win' && v === 0 ? ' sc-z' : ''}"/><text x="${ml - 6}" y="${Y(v) + 4}" text-anchor="end" class="sc-t">${v.toFixed(dec)}</text>`).join('');
       g += sizes.map((v) => `<line x1="${X(v)}" x2="${X(v)}" y1="${mt}" y2="${H - mb}" class="sc-g"/><text x="${X(v)}" y="${H - mb + 18}" text-anchor="middle" class="sc-t">${SC_SIZE_LABEL[v] || `${v}B`}</text>`).join('');
-      shown.forEach((f, fi) => {
-        const s = scStyle(f), ps = series.get(f).filter((p) => p.y != null);
+      lines.forEach((l, li) => {
+        const s = l.style, ps = l.pts.filter((p) => p.y != null);
         if (ps.length > 1) g += `<path d="${ps.map((p, i) => `${i ? 'L' : 'M'}${X(p.size).toFixed(1)} ${Y(p.y).toFixed(1)}`).join('')}" class="sc-l" style="stroke:${s.color}"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''}/>`;
         ps.forEach((p) => {
-          const tip = `${scLabel(f)} · ${SC_SIZE_LABEL[p.size]}\n${fmt(p.y)}${st.seeds === 'avg' && p.n > 1 ? ` (mean of ${p.n} init seeds)` : ''}`;
+          const tip = `${l.key} · ${SC_SIZE_LABEL[p.size]}\n${fmt(p.y)}${st.seeds === 'avg' && p.n > 1 ? ` (init seeds averaged)` : ''}`;
           g += scMarker(s.point, X(p.size), Y(p.y), 4.5, s.color, false) + `<circle cx="${X(p.size)}" cy="${Y(p.y)}" r="10" class="sc-hit" data-tip="${esc(tip)}"/>`;
           p.reps.filter((q) => q.y != null).forEach((q) => {
-            const x = X(p.size) + 12 + (fi % 2) * 7;
-            g += scMarker(s.point, x, Y(q.y), 4, s.color, true) + `<circle cx="${x}" cy="${Y(q.y)}" r="8" class="sc-hit" data-tip="${esc(`${scLabel(f)} · ${SC_SIZE_LABEL[p.size]} · init seed ${q.seed}\n${fmt(q.y)}`)}"/>`;
+            const x = X(p.size) + 12 + (li % 2) * 7;
+            g += scMarker(s.point, x, Y(q.y), 4, s.color, true) + `<circle cx="${x}" cy="${Y(q.y)}" r="8" class="sc-hit" data-tip="${esc(`${l.key} · ${SC_SIZE_LABEL[p.size]} · init seed ${q.seed}\n${fmt(q.y)}`)}"/>`;
           });
         });
       });
       return `<div class="sc-card">${title}<svg class="sc-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(dimShort(d.id))} by model size">${g}</svg></div>`;
     };
-    const cards = dimOn.length && seeds.length && shownAny(allFams, famOn)
+    const anyLine = st.view === 'win' ? st.cmps.some((c) => c.on) : allFams.some((f) => famOn.has(f));
+    const cards = dimOn.length && seeds.length && anyLine
       ? dimOn.map((id) => card(dimById(id))).join('')
-      : `<div class="sc-empty">${!seeds.length ? 'Select at least one Petri seed.' : !dimOn.length ? 'Select at least one dimension.' : 'Switch on at least one family.'}</div>`;
+      : `<div class="sc-empty">${!seeds.length ? 'Select at least one Petri seed.' : !dimOn.length ? 'Select at least one dimension.'
+        : st.view === 'win' ? 'Switch on or add at least one comparison.' : 'Switch on at least one family.'}</div>`;
     $('#view').innerHTML = `${bar}<div class="sc-grid">${cards}</div>`;
   }
-  const shownAny = (fams, on) => fams.some((f) => on.has(f));
+  const cmpGlyph = (i) => { const c = SC_CMP_COLORS[i % SC_CMP_COLORS.length];
+    return `<svg width="30" height="12" aria-hidden="true"><line x1="1" x2="29" y1="6" y2="6" stroke="${c}" stroke-width="2.5"/>${scMarker('circle', 15, 6, 4, c, false)}</svg>`; };
+  // scenario seeds grouped by theme, themes in title order
+  const themesOf = (ss) => {
+    const g = new Map();
+    ss.forEach((x) => { const th = seedOf(x).theme || 'other'; if (!g.has(th)) g.set(th, []); g.get(th).push(x); });
+    return [...g].sort((a, b) => themeTitle(a[0]).localeCompare(themeTitle(b[0])));
+  };
   // Scaling controls: chips toggle, selects switch, reset clears the stored state
   $('#view').addEventListener('click', (e) => {
-    const t = e.target.closest('[data-scf],[data-scp],[data-scd],[data-scp-all],[data-scp-none],[data-sc-reset]');
+    const t = e.target.closest('[data-scc-del],[data-scc-add],[data-scc],[data-scg],[data-scf],[data-scp],[data-scd],[data-scp-all],[data-scp-none],[data-sc-reset]');
     if (!t) return;
     e.preventDefault();
     let st = scState();
     const flip = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : arr.concat([v]));
-    if (t.dataset.scf != null) st.fams = flip(st.fams, t.dataset.scf);
+    if (t.dataset.sccDel != null) st.cmps = st.cmps.filter((c, i) => i !== +t.dataset.sccDel);
+    else if (t.hasAttribute('data-scc-add')) {
+      const ct = $('#sc-add-t').value, cr = $('#sc-add-r').value;
+      if (ct !== cr && !st.cmps.some((c) => c.t === ct && c.r === cr)) st.cmps = st.cmps.concat([{ t: ct, r: cr, on: true }]);
+    } else if (t.dataset.scc != null) st.cmps = st.cmps.map((c, i) => (i === +t.dataset.scc ? { ...c, on: !c.on } : c));
+    else if (t.dataset.scg != null) {
+      const ss = [...$('#view').querySelectorAll('[data-scp]')].map((x) => x.dataset.scp).filter((x) => (seedOf(x).theme || 'other') === t.dataset.scg);
+      const allOn = ss.every((x) => !st.offSeeds.includes(x));
+      st.offSeeds = allOn ? [...new Set(st.offSeeds.concat(ss))] : st.offSeeds.filter((x) => !ss.includes(x));
+    } else if (t.dataset.scf != null) st.fams = flip(st.fams, t.dataset.scf);
     else if (t.dataset.scd != null) st.dims = flip(st.dims, t.dataset.scd);
     else if (t.dataset.scp != null) st.offSeeds = flip(st.offSeeds, t.dataset.scp);
     else if (t.hasAttribute('data-scp-all')) st.offSeeds = [];
